@@ -503,16 +503,19 @@ export default function App() {
                 {mcChartMode === "fan" && monteCarlo && (
                   <FanChart
                     spins={monteCarlo.fan.spins}
+                    p1={monteCarlo.fan.p1}
                     p10={monteCarlo.fan.p10}
                     p25={monteCarlo.fan.p25}
                     p50={monteCarlo.fan.p50}
                     p75={monteCarlo.fan.p75}
                     p90={monteCarlo.fan.p90}
+                    p99={monteCarlo.fan.p99}
+                    mean={monteCarlo.fan.mean}
                     startingBalance={monteCarlo.startingBalance}
                   />
                 )}
                 {mcChartMode === "fan" && !monteCarlo && (
-                  <FanChart spins={[]} p10={[]} p25={[]} p50={[]} p75={[]} p90={[]} startingBalance={startingBalance} />
+                  <FanChart spins={[]} p1={[]} p10={[]} p25={[]} p50={[]} p75={[]} p90={[]} p99={[]} mean={[]} startingBalance={startingBalance} />
                 )}
               </div>
               <div>

@@ -115,8 +115,8 @@ export interface MonteCarloSummary {
   finalHistogram: { labels: number[]; counts: number[] };
   /** Survival curve: fraction of runs still solvent at each spin index. Sub-sampled to ~200 points. */
   survival: { spins: number[]; alive: number[] };
-  /** Bankroll percentile bands at each checkpoint. */
-  fan: { spins: number[]; p10: number[]; p25: number[]; p50: number[]; p75: number[]; p90: number[] };
+  /** Bankroll percentile bands + mean at each checkpoint. */
+  fan: { spins: number[]; p1: number[]; p10: number[]; p25: number[]; p50: number[]; p75: number[]; p90: number[]; p99: number[]; mean: number[] };
   /** Starting bankroll the run used (for chart reference lines) */
   startingBalance: number;
 }
@@ -422,16 +422,21 @@ export async function runMonteCarlo(
 
   // Build fan chart bands from checkpoint matrix (sort each column, pick percentiles).
   const fanSpins: number[] = Array.from(checkpoints);
-  const p10: number[] = [], p25: number[] = [], p50: number[] = [], p75: number[] = [], p90: number[] = [];
+  const p1: number[] = [], p10: number[] = [], p25: number[] = [], p50: number[] = [], p75: number[] = [], p90: number[] = [], p99: number[] = [], mean: number[] = [];
   const col = new Float32Array(runs);
+  const pickIdx = (q: number) => Math.min(runs - 1, Math.max(0, Math.floor(runs * q)));
   for (let k = 0; k < K; k++) {
-    for (let r = 0; r < runs; r++) col[r] = samples[k * runs + r];
+    let sum = 0;
+    for (let r = 0; r < runs; r++) { const v = samples[k * runs + r]; col[r] = v; sum += v; }
     col.sort();
-    p10.push(col[Math.floor(runs * 0.10)]);
-    p25.push(col[Math.floor(runs * 0.25)]);
-    p50.push(col[Math.floor(runs * 0.50)]);
-    p75.push(col[Math.floor(runs * 0.75)]);
-    p90.push(col[Math.floor(runs * 0.90)]);
+    p1.push(col[pickIdx(0.01)]);
+    p10.push(col[pickIdx(0.10)]);
+    p25.push(col[pickIdx(0.25)]);
+    p50.push(col[pickIdx(0.50)]);
+    p75.push(col[pickIdx(0.75)]);
+    p90.push(col[pickIdx(0.90)]);
+    p99.push(col[pickIdx(0.99)]);
+    mean.push(sum / runs);
   }
   const survivalAlive = Array.from(aliveAt, c => c / runs);
 
@@ -450,7 +455,7 @@ export async function runMonteCarlo(
     ruinHistogram: histogram(ruinSpins, 18),
     finalHistogram: histogram(endings, 24),
     survival: { spins: fanSpins, alive: survivalAlive },
-    fan: { spins: fanSpins, p10, p25, p50, p75, p90 },
+    fan: { spins: fanSpins, p1, p10, p25, p50, p75, p90, p99, mean },
     startingBalance: starting,
   };
 }

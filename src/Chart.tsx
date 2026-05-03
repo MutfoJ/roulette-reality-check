@@ -344,8 +344,8 @@ export function SurvivalChart({ spins, alive }: { spins: number[]; alive: number
 // ============================================================
 // Fan chart — bankroll percentile bands at each checkpoint
 // ============================================================
-export function FanChart({ spins, p10, p25, p50, p75, p90, startingBalance }:
-  { spins: number[]; p10: number[]; p25: number[]; p50: number[]; p75: number[]; p90: number[]; startingBalance: number }) {
+export function FanChart({ spins, p1, p10, p25, p50, p75, p90, p99, mean, startingBalance }:
+  { spins: number[]; p1: number[]; p10: number[]; p25: number[]; p50: number[]; p75: number[]; p90: number[]; p99: number[]; mean: number[]; startingBalance: number }) {
   const ref = React.useRef<HTMLCanvasElement | null>(null);
   React.useEffect(() => {
     const canvas = ref.current; if (!canvas) return;
@@ -364,8 +364,8 @@ export function FanChart({ spins, p10, p25, p50, p75, p90, startingBalance }:
       return;
     }
     const xMax = spins[spins.length - 1];
-    let minV = Math.min(0, ...p10, startingBalance);
-    let maxV = Math.max(...p90, startingBalance);
+    let minV = Math.min(0, ...p1, startingBalance);
+    let maxV = Math.max(...p99, startingBalance);
     if (maxV - minV < 1) maxV = minV + 1;
     const yTicks = niceTicks(minV, maxV, 6);
     const yMin = yTicks[0], yMax = yTicks[yTicks.length - 1];
@@ -421,9 +421,10 @@ export function FanChart({ spins, p10, p25, p50, p75, p90, startingBalance }:
       ctx.fillStyle = fill;
       ctx.fill();
     };
+    drawBand(p1, p99, "rgba(76, 201, 240, 0.10)"); // outermost
     drawBand(p10, p90, "rgba(76, 201, 240, 0.18)"); // outer
     drawBand(p25, p75, "rgba(76, 201, 240, 0.30)"); // inner
-    // median line
+    // median line (solid gold)
     ctx.beginPath();
     ctx.lineWidth = 2.2 * dpr;
     ctx.strokeStyle = "#f4c762";
@@ -432,6 +433,17 @@ export function FanChart({ spins, p10, p25, p50, p75, p90, startingBalance }:
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     });
     ctx.stroke();
+    // mean line (dashed magenta) — distinct from median to make divergence visible
+    ctx.beginPath();
+    ctx.lineWidth = 1.8 * dpr;
+    ctx.strokeStyle = "#f472b6";
+    ctx.setLineDash([5 * dpr, 4 * dpr]);
+    spins.forEach((s, i) => {
+      const x = x2px(s), y = y2px(mean[i]);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
     ctx.restore();
     // axis titles
     ctx.fillStyle = "rgba(244, 199, 98, 0.95)";
@@ -442,18 +454,35 @@ export function FanChart({ spins, p10, p25, p50, p75, p90, startingBalance }:
     ctx.translate(16 * dpr, padT + plotH / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("Bankroll ($) — bands: 10-90 / 25-75 / median", 0, 0);
+    ctx.fillText("Bankroll ($) — bands: p1-p99 / p10-p90 / p25-p75 / median / mean", 0, 0);
     ctx.restore();
     // legend
     ctx.font = `${10 * dpr}px Inter, sans-serif`;
     ctx.textAlign = "left"; ctx.textBaseline = "top";
     const lx = padL + 8 * dpr, ly = padT + 4 * dpr;
-    ctx.fillStyle = "rgba(76, 201, 240, 0.30)"; ctx.fillRect(lx, ly + 2 * dpr, 12 * dpr, 8 * dpr);
-    ctx.fillStyle = "rgba(203, 213, 225, 0.85)"; ctx.fillText("p25-p75", lx + 16 * dpr, ly);
-    ctx.fillStyle = "rgba(76, 201, 240, 0.18)"; ctx.fillRect(lx + 70 * dpr, ly + 2 * dpr, 12 * dpr, 8 * dpr);
-    ctx.fillStyle = "rgba(203, 213, 225, 0.85)"; ctx.fillText("p10-p90", lx + 86 * dpr, ly);
-    ctx.fillStyle = "#f4c762"; ctx.fillRect(lx + 140 * dpr, ly + 5 * dpr, 12 * dpr, 2 * dpr);
-    ctx.fillStyle = "rgba(203, 213, 225, 0.85)"; ctx.fillText("median", lx + 156 * dpr, ly);
+    let cx = lx;
+    const swatch = (fill: string, label: string, isLine = false, dashed = false) => {
+      if (isLine) {
+        ctx.fillStyle = fill;
+        if (dashed) {
+          ctx.fillRect(cx, ly + 5 * dpr, 4 * dpr, 2 * dpr);
+          ctx.fillRect(cx + 7 * dpr, ly + 5 * dpr, 4 * dpr, 2 * dpr);
+        } else {
+          ctx.fillRect(cx, ly + 5 * dpr, 12 * dpr, 2 * dpr);
+        }
+      } else {
+        ctx.fillStyle = fill;
+        ctx.fillRect(cx, ly + 2 * dpr, 12 * dpr, 8 * dpr);
+      }
+      ctx.fillStyle = "rgba(203, 213, 225, 0.85)";
+      ctx.fillText(label, cx + 16 * dpr, ly);
+      cx += 16 * dpr + ctx.measureText(label).width + 12 * dpr;
+    };
+    swatch("rgba(76, 201, 240, 0.30)", "p25-p75");
+    swatch("rgba(76, 201, 240, 0.18)", "p10-p90");
+    swatch("rgba(76, 201, 240, 0.10)", "p1-p99");
+    swatch("#f4c762", "median", true, false);
+    swatch("#f472b6", "mean", true, true);
   }, [spins, p10, p25, p50, p75, p90, startingBalance]);
   return <canvas className="chart-canvas small" ref={ref} />;
 }
