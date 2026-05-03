@@ -250,6 +250,214 @@ export function BankrollChart({ history, results, mode, startingBalance }: Props
   return <canvas className="chart-canvas" ref={ref} />;
 }
 
+// ============================================================
+// Survival curve — % of runs still solvent at each spin index
+// ============================================================
+export function SurvivalChart({ spins, alive }: { spins: number[]; alive: number[] }) {
+  const ref = React.useRef<HTMLCanvasElement | null>(null);
+  React.useEffect(() => {
+    const canvas = ref.current; if (!canvas) return;
+    const ctx = canvas.getContext("2d"); if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.clientWidth * dpr, H = canvas.clientHeight * dpr;
+    canvas.width = W; canvas.height = H;
+    ctx.clearRect(0, 0, W, H);
+    const padL = 56 * dpr, padR = 16 * dpr, padT = 14 * dpr, padB = 46 * dpr;
+    const plotW = W - padL - padR, plotH = H - padT - padB;
+    if (!spins.length) {
+      ctx.fillStyle = "rgba(139, 149, 173, 0.6)";
+      ctx.font = `${13 * dpr}px Inter, sans-serif`;
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("Run Monte Carlo to see survival curve", W / 2, H / 2);
+      return;
+    }
+    const xMax = spins[spins.length - 1];
+    const yTicks = [0, 0.25, 0.5, 0.75, 1];
+    const x2px = (v: number) => padL + (v / xMax) * plotW;
+    const y2px = (v: number) => padT + (1 - v) * plotH;
+    // y grid + labels
+    ctx.font = `${10 * dpr}px "JetBrains Mono", monospace`;
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    yTicks.forEach((t) => {
+      const y = y2px(t);
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+      ctx.fillStyle = "rgba(203, 213, 225, 0.8)";
+      ctx.fillText(`${(t * 100).toFixed(0)}%`, padL - 6 * dpr, y);
+    });
+    // x ticks
+    const xTicksRaw = niceTicks(0, xMax, 6);
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    xTicksRaw.forEach((t) => {
+      if (t < 0 || t > xMax) return;
+      const x = x2px(t);
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+      ctx.fillStyle = "rgba(203, 213, 225, 0.8)";
+      ctx.fillText(formatSpin(t), x, padT + plotH + 6 * dpr);
+    });
+    // axis lines
+    ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 1.1 * dpr;
+    ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH); ctx.lineTo(padL + plotW, padT + plotH); ctx.stroke();
+    // area fill
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(padL, padT, plotW, plotH);
+    ctx.clip();
+    ctx.beginPath();
+    spins.forEach((s, i) => {
+      const x = x2px(s), y = y2px(alive[i]);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.lineTo(x2px(xMax), padT + plotH);
+    ctx.lineTo(padL, padT + plotH);
+    ctx.closePath();
+    const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
+    grad.addColorStop(0, "rgba(74, 222, 128, 0.30)");
+    grad.addColorStop(1, "rgba(74, 222, 128, 0.02)");
+    ctx.fillStyle = grad; ctx.fill();
+    // line
+    ctx.beginPath();
+    ctx.lineWidth = 2.2 * dpr;
+    ctx.strokeStyle = "#4ade80";
+    spins.forEach((s, i) => {
+      const x = x2px(s), y = y2px(alive[i]);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.restore();
+    // axis titles
+    ctx.fillStyle = "rgba(244, 199, 98, 0.95)";
+    ctx.font = `700 ${10 * dpr}px Inter, sans-serif`;
+    ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+    ctx.fillText("Spin #", padL + plotW / 2, H - 8 * dpr);
+    ctx.save();
+    ctx.translate(14 * dpr, padT + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("% of runs still solvent", 0, 0);
+    ctx.restore();
+  }, [spins, alive]);
+  return <canvas className="chart-canvas small" ref={ref} />;
+}
+
+// ============================================================
+// Fan chart — bankroll percentile bands at each checkpoint
+// ============================================================
+export function FanChart({ spins, p10, p25, p50, p75, p90, startingBalance }:
+  { spins: number[]; p10: number[]; p25: number[]; p50: number[]; p75: number[]; p90: number[]; startingBalance: number }) {
+  const ref = React.useRef<HTMLCanvasElement | null>(null);
+  React.useEffect(() => {
+    const canvas = ref.current; if (!canvas) return;
+    const ctx = canvas.getContext("2d"); if (!ctx) return;
+    const dpr = window.devicePixelRatio || 1;
+    const W = canvas.clientWidth * dpr, H = canvas.clientHeight * dpr;
+    canvas.width = W; canvas.height = H;
+    ctx.clearRect(0, 0, W, H);
+    const padL = 70 * dpr, padR = 24 * dpr, padT = 18 * dpr, padB = 50 * dpr;
+    const plotW = W - padL - padR, plotH = H - padT - padB;
+    if (!spins.length) {
+      ctx.fillStyle = "rgba(139, 149, 173, 0.6)";
+      ctx.font = `${13 * dpr}px Inter, sans-serif`;
+      ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText("Run Monte Carlo to see bankroll fan chart", W / 2, H / 2);
+      return;
+    }
+    const xMax = spins[spins.length - 1];
+    let minV = Math.min(0, ...p10, startingBalance);
+    let maxV = Math.max(...p90, startingBalance);
+    if (maxV - minV < 1) maxV = minV + 1;
+    const yTicks = niceTicks(minV, maxV, 6);
+    const yMin = yTicks[0], yMax = yTicks[yTicks.length - 1];
+    const ySpan = yMax - yMin || 1;
+    const x2px = (v: number) => padL + (v / xMax) * plotW;
+    const y2px = (v: number) => padT + (1 - (v - yMin) / ySpan) * plotH;
+    // y grid + labels
+    ctx.font = `${11 * dpr}px "JetBrains Mono", monospace`;
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    yTicks.forEach((t) => {
+      const y = y2px(t);
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+      ctx.fillStyle = "rgba(203, 213, 225, 0.8)";
+      ctx.fillText(formatTick(t, "money"), padL - 8 * dpr, y);
+    });
+    // x ticks
+    const xTicksRaw = niceTicks(0, xMax, 6);
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    xTicksRaw.forEach((t) => {
+      if (t < 0 || t > xMax) return;
+      const x = x2px(t);
+      ctx.strokeStyle = "rgba(255,255,255,0.06)";
+      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
+      ctx.fillStyle = "rgba(203, 213, 225, 0.8)";
+      ctx.fillText(formatSpin(t), x, padT + plotH + 6 * dpr);
+    });
+    // axis lines
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.18)"; ctx.lineWidth = 1.1 * dpr;
+    ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH); ctx.lineTo(padL + plotW, padT + plotH); ctx.stroke();
+    // baseline (starting bankroll)
+    if (startingBalance >= yMin && startingBalance <= yMax) {
+      const y = y2px(startingBalance);
+      ctx.strokeStyle = "rgba(244, 199, 98, 0.7)";
+      ctx.setLineDash([6 * dpr, 6 * dpr]);
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    // bands: 10-90 then 25-75 (nested)
+    ctx.save();
+    ctx.beginPath(); ctx.rect(padL, padT, plotW, plotH); ctx.clip();
+    const drawBand = (lo: number[], hi: number[], fill: string) => {
+      ctx.beginPath();
+      spins.forEach((s, i) => {
+        const x = x2px(s), y = y2px(hi[i]);
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      for (let i = spins.length - 1; i >= 0; i--) {
+        const x = x2px(spins[i]), y = y2px(lo[i]);
+        ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+    };
+    drawBand(p10, p90, "rgba(76, 201, 240, 0.18)"); // outer
+    drawBand(p25, p75, "rgba(76, 201, 240, 0.30)"); // inner
+    // median line
+    ctx.beginPath();
+    ctx.lineWidth = 2.2 * dpr;
+    ctx.strokeStyle = "#f4c762";
+    spins.forEach((s, i) => {
+      const x = x2px(s), y = y2px(p50[i]);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.restore();
+    // axis titles
+    ctx.fillStyle = "rgba(244, 199, 98, 0.95)";
+    ctx.font = `700 ${11 * dpr}px Inter, sans-serif`;
+    ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
+    ctx.fillText("Spin #", padL + plotW / 2, H - 8 * dpr);
+    ctx.save();
+    ctx.translate(16 * dpr, padT + plotH / 2);
+    ctx.rotate(-Math.PI / 2);
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText("Bankroll ($) — bands: 10-90 / 25-75 / median", 0, 0);
+    ctx.restore();
+    // legend
+    ctx.font = `${10 * dpr}px Inter, sans-serif`;
+    ctx.textAlign = "left"; ctx.textBaseline = "top";
+    const lx = padL + 8 * dpr, ly = padT + 4 * dpr;
+    ctx.fillStyle = "rgba(76, 201, 240, 0.30)"; ctx.fillRect(lx, ly + 2 * dpr, 12 * dpr, 8 * dpr);
+    ctx.fillStyle = "rgba(203, 213, 225, 0.85)"; ctx.fillText("p25-p75", lx + 16 * dpr, ly);
+    ctx.fillStyle = "rgba(76, 201, 240, 0.18)"; ctx.fillRect(lx + 70 * dpr, ly + 2 * dpr, 12 * dpr, 8 * dpr);
+    ctx.fillStyle = "rgba(203, 213, 225, 0.85)"; ctx.fillText("p10-p90", lx + 86 * dpr, ly);
+    ctx.fillStyle = "#f4c762"; ctx.fillRect(lx + 140 * dpr, ly + 5 * dpr, 12 * dpr, 2 * dpr);
+    ctx.fillStyle = "rgba(203, 213, 225, 0.85)"; ctx.fillText("median", lx + 156 * dpr, ly);
+  }, [spins, p10, p25, p50, p75, p90, startingBalance]);
+  return <canvas className="chart-canvas small" ref={ref} />;
+}
+
 export function HistogramChart({ data, color = "#f4c762", xLabel = "Spins until ruin", yLabel = "# of trials" }: { data: { labels: number[]; counts: number[] }; color?: string; xLabel?: string; yLabel?: string }) {
   const ref = React.useRef<HTMLCanvasElement | null>(null);
 
@@ -273,7 +481,7 @@ export function HistogramChart({ data, color = "#f4c762", xLabel = "Spins until 
       ctx.font = `${13 * dpr}px Inter, sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      ctx.fillText("Run Monte Carlo to see ruin distribution", W / 2, H / 2);
+      ctx.fillText("Run Monte Carlo to see distribution", W / 2, H / 2);
       return;
     }
     const max = Math.max(...data.counts);

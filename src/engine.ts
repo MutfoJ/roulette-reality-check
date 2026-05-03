@@ -111,6 +111,14 @@ export interface MonteCarloSummary {
   /** Player return per dollar staked, across all runs */
   realizedEdge: number;
   ruinHistogram: { labels: number[]; counts: number[] };
+  /** Final bankroll distribution across ALL runs (busted + survived) */
+  finalHistogram: { labels: number[]; counts: number[] };
+  /** Survival curve: fraction of runs still solvent at each spin index. Sub-sampled to ~200 points. */
+  survival: { spins: number[]; alive: number[] };
+  /** Bankroll percentile bands at each checkpoint. */
+  fan: { spins: number[]; p10: number[]; p25: number[]; p50: number[]; p75: number[]; p90: number[] };
+  /** Starting bankroll the run used (for chart reference lines) */
+  startingBalance: number;
 }
 
 // payout is fixed (defines the bet); coverage is computed at runtime from wheelType.
@@ -353,6 +361,15 @@ export async function runMonteCarlo(
   let totalSpinsPlayed = 0;
   let totalStakedAll = 0;
   let totalProfitAll = 0;
+
+  // Checkpoint sub-sampling for fan chart + survival curve.
+  // Cap at K=200 evenly-spaced spin indices to bound memory at ~K*runs Float32s.
+  const K = Math.min(200, iterations);
+  const checkpoints = new Int32Array(K);
+  for (let k = 0; k < K; k++) checkpoints[k] = Math.max(1, Math.round(((k + 1) * iterations) / K));
+  const samples = new Float32Array(K * runs); // bankroll at each (checkpoint, run); 0 if busted earlier
+  const aliveAt = new Uint32Array(K); // # of runs still solvent at each checkpoint
+
   const batch = 25;
   for (let r = 0; r < runs; r++) {
     let bal = starting;
@@ -360,13 +377,25 @@ export async function runMonteCarlo(
     let ruin: number | null = null;
     let runStaked = 0;
     let spinsPlayed = 0;
+    let alive = true;
+    let cpIdx = 0;
     for (let i = 1; i <= iterations; i++) {
-      const next = spinOnce(bal, st, opts);
-      if (!next.result) { ruin = i; break; }
-      runStaked += next.result.stake;
-      spinsPlayed++;
-      st = next.state; bal = next.balance;
-      if (bal <= 0) { ruin = i; bal = 0; break; }
+      if (alive) {
+        const next = spinOnce(bal, st, opts);
+        if (!next.result) { ruin = i; alive = false; }
+        else {
+          runStaked += next.result.stake;
+          spinsPlayed++;
+          st = next.state; bal = next.balance;
+          if (bal <= 0) { ruin = i; bal = 0; alive = false; }
+        }
+      }
+      // Capture checkpoint sample at the end of spin i
+      while (cpIdx < K && checkpoints[cpIdx] === i) {
+        samples[cpIdx * runs + r] = alive ? bal : 0;
+        if (alive) aliveAt[cpIdx]++;
+        cpIdx++;
+      }
     }
     totalSpinsPlayed += spinsPlayed;
     totalStakedAll += runStaked;
@@ -390,6 +419,22 @@ export async function runMonteCarlo(
   const avgChangePerSpin = totalSpinsPlayed > 0 ? totalProfitAll / totalSpinsPlayed : 0;
   // True realised edge: profit / staked. Should converge to the wheel's house edge.
   const realizedEdge = totalStakedAll > 0 ? totalProfitAll / totalStakedAll : 0;
+
+  // Build fan chart bands from checkpoint matrix (sort each column, pick percentiles).
+  const fanSpins: number[] = Array.from(checkpoints);
+  const p10: number[] = [], p25: number[] = [], p50: number[] = [], p75: number[] = [], p90: number[] = [];
+  const col = new Float32Array(runs);
+  for (let k = 0; k < K; k++) {
+    for (let r = 0; r < runs; r++) col[r] = samples[k * runs + r];
+    col.sort();
+    p10.push(col[Math.floor(runs * 0.10)]);
+    p25.push(col[Math.floor(runs * 0.25)]);
+    p50.push(col[Math.floor(runs * 0.50)]);
+    p75.push(col[Math.floor(runs * 0.75)]);
+    p90.push(col[Math.floor(runs * 0.90)]);
+  }
+  const survivalAlive = Array.from(aliveAt, c => c / runs);
+
   return {
     runs, iterations,
     ruinRate: (ruinSpins.length / runs) * 100,
@@ -403,6 +448,10 @@ export async function runMonteCarlo(
     avgChangePerSpin,
     realizedEdge,
     ruinHistogram: histogram(ruinSpins, 18),
+    finalHistogram: histogram(endings, 24),
+    survival: { spins: fanSpins, alive: survivalAlive },
+    fan: { spins: fanSpins, p10, p25, p50, p75, p90 },
+    startingBalance: starting,
   };
 }
 

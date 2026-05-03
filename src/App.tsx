@@ -14,7 +14,7 @@ import {
   type MonteCarloSummary, type WheelType,
 } from "./engine";
 import { RouletteWheel } from "./Wheel";
-import { BankrollChart, HistogramChart } from "./Chart";
+import { BankrollChart, HistogramChart, SurvivalChart, FanChart } from "./Chart";
 import { CasinoTable } from "./CasinoTable";
 
 const BANKROLL_PRESETS = [100, 500, 1000, 5000, 10000];
@@ -100,6 +100,8 @@ export default function App() {
   const [mcProgress, setMcProgress] = React.useState(0);
   const [mcRunning, setMcRunning] = React.useState(false);
   const [monteCarlo, setMonteCarlo] = React.useState<MonteCarloSummary | null>(null);
+  type McChartMode = "ruin" | "survival" | "final" | "fan";
+  const [mcChartMode, setMcChartMode] = React.useState<McChartMode>("ruin");
 
   const [flashKey, setFlashKey] = React.useState(0);
 
@@ -386,7 +388,7 @@ export default function App() {
                 <div className="action-row">
                   <span style={{ color: "var(--muted)", fontSize: 11, fontWeight: 800, letterSpacing: 1, textTransform: "uppercase" }}>Quick run</span>
                   <Help>Run a fixed batch of spins instantly without animation.</Help>
-                  {[10, 100, 1000, 5000].map(n => (
+                  {[10, 100, 1000, 5000, 10000].map(n => (
                     <button key={n} className="btn" onClick={() => quickRun(n)} disabled={isRunning}>+{n.toLocaleString()}</button>
                   ))}
                 </div>
@@ -458,8 +460,61 @@ export default function App() {
               <div className="mc-progress"><div style={{ width: `${mcProgress * 100}%` }} /></div>
             ) : null}
 
+            <div className="mode-tabs" style={{ marginBottom: 10 }}>
+              {([
+                ["ruin", "Spins until ruin"],
+                ["survival", "Survival curve"],
+                ["final", "Final bankroll"],
+                ["fan", "Bankroll fan"],
+              ] as [McChartMode, string][]).map(([v, l]) => (
+                <button key={v} className={mcChartMode === v ? "active" : ""} onClick={() => setMcChartMode(v)}>{l}</button>
+              ))}
+              <Help>
+                <strong>Spins until ruin:</strong> histogram of how long busted runs lasted.
+                <br /><strong>Survival curve:</strong> % of runs still solvent at each spin.
+                <br /><strong>Final bankroll:</strong> distribution of where every run ended.
+                <br /><strong>Bankroll fan:</strong> p10/p25/median/p75/p90 bands at each checkpoint.
+              </Help>
+            </div>
+
             <div className="analytics-grid">
-              <HistogramChart data={monteCarlo?.ruinHistogram ?? { labels: [], counts: [] }} />
+              <div>
+                {mcChartMode === "ruin" && (
+                  <HistogramChart
+                    data={monteCarlo?.ruinHistogram ?? { labels: [], counts: [] }}
+                    xLabel="Spins until ruin"
+                    yLabel="# of busted runs"
+                  />
+                )}
+                {mcChartMode === "survival" && (
+                  <SurvivalChart
+                    spins={monteCarlo?.survival.spins ?? []}
+                    alive={monteCarlo?.survival.alive ?? []}
+                  />
+                )}
+                {mcChartMode === "final" && (
+                  <HistogramChart
+                    data={monteCarlo?.finalHistogram ?? { labels: [], counts: [] }}
+                    color="#4cc9f0"
+                    xLabel="Final bankroll ($)"
+                    yLabel="# of runs"
+                  />
+                )}
+                {mcChartMode === "fan" && monteCarlo && (
+                  <FanChart
+                    spins={monteCarlo.fan.spins}
+                    p10={monteCarlo.fan.p10}
+                    p25={monteCarlo.fan.p25}
+                    p50={monteCarlo.fan.p50}
+                    p75={monteCarlo.fan.p75}
+                    p90={monteCarlo.fan.p90}
+                    startingBalance={monteCarlo.startingBalance}
+                  />
+                )}
+                {mcChartMode === "fan" && !monteCarlo && (
+                  <FanChart spins={[]} p10={[]} p25={[]} p50={[]} p75={[]} p90={[]} startingBalance={startingBalance} />
+                )}
+              </div>
               <div>
                 {monteCarlo ? (
                   <div className="summary-grid" style={{ marginTop: 0 }}>
