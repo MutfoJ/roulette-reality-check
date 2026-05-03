@@ -1,6 +1,6 @@
 # Roulette Reality Check
 
-> A European/American roulette simulator that stress-tests classic betting systems and makes the house edge visible.
+> A browser-based roulette lab for stress-testing betting systems, bankroll risk, and the house edge.
 
 **Live demo:** [roulette-reality-check.vercel.app](https://roulette-reality-check.vercel.app)
 
@@ -9,60 +9,62 @@
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-3178c6?logo=typescript)
 ![Deployed on Vercel](https://img.shields.io/badge/Vercel-deployed-black?logo=vercel)
 
----
+<p align="center">
+  <img
+    src="output/playwright/roulette-presentation-small.gif"
+    alt="Roulette Reality Check showing Martingale strategy, bankroll evolution, and Monte Carlo analysis"
+    width="760"
+  />
+</p>
 
-## What it does
+Roulette Reality Check lets you pick a European or American wheel, choose a classic betting progression, set bankroll and table constraints, then watch the system play out with live charts and Monte Carlo analysis.
 
-Pick European single-zero or American double-zero roulette, choose a betting strategy, set a bankroll, and hit Run. The simulator plays the selected wheel against your chosen system with exact standard payouts, configurable table maximums, bankroll constraints, bankroll charts, summary metrics, and Monte Carlo outcome distributions.
+The point is not to find a magic progression. It is to make the tradeoff visible: strategies can reshape variance, streaks, and ruin timing, but they do not remove the negative expected return.
 
-There is no winning progression. The simulator's job is to make that fact obvious in numbers and pictures.
+## Highlights
 
-## Features
+- **European and American wheels:** single-zero and double-zero layouts with the correct pocket counts, wheel renders, and house edges.
+- **Classic progressions:** Flat, Martingale, Reverse Martingale, D'Alembert, Fibonacci, Oscar's Grind, Labouchere, and a manual table layout.
+- **Live spin engine:** animated wheel, last outcomes, run/pause controls, speed presets, quick-run batches, and automatic stop-on-bust behavior.
+- **Bankroll evolution:** raw dollars, profit, percent return, drawdown, and stake-size chart modes.
+- **Monte Carlo simulator:** repeated sessions reveal ruin probability, survival curves, final bankroll distribution, and percentile fan charts.
+- **Casino-style manual mode:** place chips on numbers, zeros, columns, dozens, red/black, odd/even, and high/low bets.
 
-### Wheel modes
+## What It Shows
 
-- **European single-zero:** 37 pockets, house edge `1/37 ~= 2.70%`
-- **American double-zero:** 38 pockets, house edge `2/38 ~= 5.26%`
-- Top-of-app toggle switches the wheel, pocket count, edge math, wheel render, table layout, and straight-bet choices.
+The app is built around a simple idea: one lucky or unlucky run can be persuasive, so the simulator shows both the dramatic single-session story and the larger distribution.
+
+Start with a strategy, press Run, and watch the bankroll graph update spin by spin. Then run hundreds or thousands of independent sessions with the same setup to see how often the bankroll survives, where sessions end, and how realized edge converges toward the wheel's math.
+
+## Wheel Modes
+
+- **European single-zero:** 37 pockets, house edge `1 / 37 ~= 2.70%`
+- **American double-zero:** 38 pockets, house edge `2 / 38 ~= 5.26%`
+- The wheel toggle updates the render, pocket count, edge math, table layout, and straight-bet choices.
 - Internally, `00` is represented as pocket `37` and displayed as `00`.
 
-### Betting systems
+## Betting Systems
 
-Eight classic progressions, each with its own explanation in-app:
+Eight progressions are available, each with in-app explanation text:
 
-- **Flat** (control): same stake every spin
-- **Martingale:** double on losses, capped by table max/bankroll
-- **Reverse Martingale (Paroli):** double on wins
-- **D'Alembert:** +1 unit on loss, -1 unit on win
-- **Fibonacci:** climb the Fibonacci ladder on losses, capped at the configured sequence limit
-- **Oscar's Grind:** target +1 unit per series with corrected next-win cap
-- **Labouchere:** cancellation system with a bounded running sequence
-- **Manual (casino-style table):** drop chips on a felt layout that repeats each spin
+- **Flat:** same stake every spin.
+- **Martingale:** double after losses, reset after a win, capped by bankroll and table maximum.
+- **Reverse Martingale (Paroli):** double after wins, reset after a loss.
+- **D'Alembert:** add one unit after a loss, subtract one unit after a win.
+- **Fibonacci:** climb the Fibonacci sequence after losses and step back after wins.
+- **Oscar's Grind:** target one unit of profit per series with controlled stake increases.
+- **Labouchere:** cancellation sequence with bounded line length.
+- **Manual layout:** place chips on the felt and let the selected progression scale the whole layout.
 
-### Bet targets
+## Analysis Views
 
-Standard roulette bets are supported: red, black, odd, even, 1-18, 19-36, dozens, columns, and straight pockets. Coverage is computed from the selected wheel size, so the same bet has worse odds on American double-zero roulette.
+### Bankroll Chart
 
-### Casino-style manual mode
+The main chart can show raw bankroll, profit/loss, percent return, drawdown from peak, or stake size. Summary metrics update live with ending bankroll, ROI, max drawdown, lowest/peak balance, hit rate, average stake, longest streaks, standard deviation, and ruin spin.
 
-Click any number, `0`, `00` in American mode, or any outside bet to drop a chip. Chip denominations are `$5 / $10 / $25 / $100 / $500 / $1K`. The expected loss display uses the actual total manual stake, not the base stake control.
+### Monte Carlo
 
-### Wheel and charts
-
-- Authentic European and American wheel orders
-- SVG wheel render with red/black/green pockets and `00` support
-- Speed control: `1x / 2x / 4x / 8x / 20x / 50x / 100x`
-- Quick-run buttons: `+10 / +100 / +1000 / +5000`
-- Bankroll chart modes: raw dollars, profit, percent return, drawdown, and stake size
-- Monte Carlo histogram of spins until ruin
-
-### Executive summary
-
-Metrics update in real time: ending bankroll, profit/loss, ROI, max drawdown, lowest/peak balance, hit rate, average per spin, average stake, total staked, longest win/loss streaks, standard deviation per spin, and ruin spin number.
-
-### Monte Carlo analysis
-
-Runs N independent simulations x M spins each and reports:
+Monte Carlo mode runs many independent sessions with the same settings and reports:
 
 - Ruin probability
 - Average and median spins to ruin
@@ -70,32 +72,29 @@ Runs N independent simulations x M spins each and reports:
 - Average and median final bankroll
 - Best and worst final bankroll
 - Average dollars per played spin
-- Realized edge as total profit divided by total staked, which should converge toward `-2.70%` on European or `-5.26%` on American roulette
-
-### Help everywhere
-
-Yellow `!` markers next to options open hover-tooltips explaining what each setting does and when it matters.
+- Realized edge as total profit divided by total staked
+- Survival curve, final-bankroll histogram, and bankroll fan chart
 
 ## Architecture
 
 ```text
 src/
-├── engine.ts        Pure simulation engine: PRNG, wheel modes,
-│                    bet evaluation, progressions, Monte Carlo.
-├── Wheel.tsx        SVG European/American wheel + ball orbit.
-├── CasinoTable.tsx  Manual-mode casino felt with 0/00 support.
-├── Chart.tsx        Canvas-based charts with axes and ticks.
-├── App.tsx          Layout, controls, state management.
-├── main.tsx         Entry point.
-└── styles.css       Styling, no UI framework dependency.
+|-- engine.ts        Pure simulation engine: PRNG, wheel modes,
+|                    bet evaluation, progressions, Monte Carlo.
+|-- Wheel.tsx        SVG European/American wheel and ball orbit.
+|-- CasinoTable.tsx  Manual-mode casino felt with 0/00 support.
+|-- Chart.tsx        Canvas-based charts with axes and ticks.
+|-- App.tsx          Layout, controls, state management.
+|-- main.tsx         React entry point.
+`-- styles.css       Styling, no UI framework dependency.
 ```
 
-- **PRNG:** Mulberry32-style deterministic generator
+- **PRNG:** deterministic Mulberry32-style generator
 - **Probabilities:** exact uniform pocket sampling for the selected wheel size
 - **Payouts:** standard net payouts (`1:1`, `2:1`, `35:1`)
-- **No backend:** single static bundle, runs entirely in the browser
+- **Runtime:** static frontend only, no backend required
 
-## Local development
+## Local Development
 
 ```bash
 npm install
@@ -113,18 +112,18 @@ npm run build
 vercel deploy -y
 ```
 
-## The math
+## The Math
 
-On every standard roulette bet, the expected player return per unit staked is the negative value of the zero pockets divided by total pockets:
+Every standard roulette bet carries the wheel's house edge. The expected player return per unit staked is the negative value of the zero pockets divided by total pockets:
 
 ```text
-European: E[player] = -1 / 37  ~= -2.70%
-American: E[player] = -2 / 38  ~= -5.26%
+European: E[player] = -1 / 37 ~= -2.70%
+American: E[player] = -2 / 38 ~= -5.26%
 ```
 
 For example, a `$10` European even-money bet has expected value `-$10 / 37 ~= -$0.27`. A `$10` American even-money bet has expected value `-$20 / 38 ~= -$0.53`.
 
-Progressions can change variance, bet sizing, ruin timing, and the shape of winning/losing sessions. They do not change the expected return per dollar wagered.
+Progressions can change variance, bet sizing, streak behavior, and ruin timing. They do not change the expected return per dollar wagered.
 
 ## License
 
