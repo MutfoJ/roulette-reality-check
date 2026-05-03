@@ -260,14 +260,9 @@ input:focus, select:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgb
   line-height: 1;
 }
 .help:hover { background: var(--gold); color: #0a0d12; }
-.help .tip {
-  visibility: hidden;
-  opacity: 0;
-  position: absolute;
-  bottom: calc(100% + 8px);
-  left: 50%;
-  transform: translateX(-50%);
-  width: 240px;
+
+.floating-tip {
+  position: fixed;
   background: #050709;
   color: var(--text);
   border: 1px solid var(--border-strong);
@@ -279,21 +274,33 @@ input:focus, select:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgb
   text-transform: none;
   letter-spacing: normal;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6);
-  z-index: 1000;
+  z-index: 10000;
   pointer-events: none;
-  transition: opacity 150ms;
   text-align: left;
+  animation: tip-in 120ms ease-out;
 }
-.help .tip::after {
+.floating-tip.top {
+  transform: translateY(-100%);
+}
+.floating-tip::after {
   content: "";
   position: absolute;
-  top: 100%;
   left: 50%;
   transform: translateX(-50%);
   border: 6px solid transparent;
+}
+.floating-tip.top::after {
+  top: 100%;
   border-top-color: var(--border-strong);
 }
-.help:hover .tip { visibility: visible; opacity: 1; }
+.floating-tip.bottom::after {
+  bottom: 100%;
+  border-bottom-color: var(--border-strong);
+}
+@keyframes tip-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
 
 /* ---------- STRATEGY NOTE ---------- */
 .strategy-note {

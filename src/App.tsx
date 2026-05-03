@@ -1,4 +1,5 @@
 import React from "react";
+import { createPortal } from "react-dom";
 import {
   Activity, BarChart3, CircleDollarSign, Gauge, LineChart,
   Pause, Play, RotateCcw, Sparkles, Zap, ChevronRight,
@@ -19,7 +20,55 @@ import { CasinoTable } from "./CasinoTable";
 const BANKROLL_PRESETS = [100, 500, 1000, 5000, 10000];
 
 function Help({ children }: { children: React.ReactNode }) {
-  return <i className="help" tabIndex={0}>!<span className="tip">{children}</span></i>;
+  const ref = React.useRef<HTMLElement | null>(null);
+  const [tip, setTip] = React.useState<{ left: number; top: number; place: "top" | "bottom" } | null>(null);
+
+  const show = React.useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const width = Math.min(280, window.innerWidth - 24);
+    const left = Math.max(12, Math.min(window.innerWidth - width - 12, rect.left + rect.width / 2 - width / 2));
+    const place = rect.top < 130 ? "bottom" : "top";
+    const top = place === "bottom" ? rect.bottom + 10 : rect.top - 10;
+    setTip({ left, top, place });
+  }, []);
+
+  React.useEffect(() => {
+    if (!tip) return undefined;
+    const hide = () => setTip(null);
+    window.addEventListener("scroll", hide, true);
+    window.addEventListener("resize", hide);
+    return () => {
+      window.removeEventListener("scroll", hide, true);
+      window.removeEventListener("resize", hide);
+    };
+  }, [tip]);
+
+  return (
+    <>
+      <i
+        ref={ref}
+        className="help"
+        tabIndex={0}
+        onMouseEnter={show}
+        onMouseLeave={() => setTip(null)}
+        onFocus={show}
+        onBlur={() => setTip(null)}
+      >
+        !
+      </i>
+      {tip && createPortal(
+        <div
+          className={`floating-tip ${tip.place}`}
+          style={{ left: tip.left, top: tip.top, width: "min(280px, calc(100vw - 24px))" }}
+        >
+          {children}
+        </div>,
+        document.body,
+      )}
+    </>
+  );
 }
 
 export default function App() {
