@@ -389,10 +389,17 @@ export async function runMonteCarlo(
   const samples = new Float32Array(K * runs); // bankroll at each (checkpoint, run); 0 if busted earlier
   const aliveAt = new Uint32Array(K); // # of runs still solvent at each checkpoint
 
+  // The progression's "unit" is the chip total when bet target = Manual,
+  // otherwise it's baseStake. Initialise strategy state with that unit so
+  // the first spin doesn't get an off-by-ratio multiplier.
+  const stateBase = (opts.betKind === "manual" && opts.manualBets && opts.manualBets.length > 0)
+    ? opts.manualBets.reduce((s, b) => s + b.amount, 0)
+    : opts.baseStake;
+
   const batch = 25;
   for (let r = 0; r < runs; r++) {
     let bal = starting;
-    let st = makeStrategyState(opts.baseStake);
+    let st = makeStrategyState(stateBase);
     let ruin: number | null = null;
     let runStaked = 0;
     let spinsPlayed = 0;
