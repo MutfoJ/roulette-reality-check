@@ -1,22 +1,34 @@
 import React from "react";
-import { WHEEL_ORDER, POCKET_ANGLE, getNumberColor, type SpinResult } from "./engine";
+import {
+  getWheelOrder, getWheelSize, getPocketAngle,
+  getNumberColor, pocketLabel,
+  type SpinResult, type WheelType,
+} from "./engine";
 
-export function RouletteWheel({ result, spinning }: { result: SpinResult | null; spinning: boolean }) {
+export function RouletteWheel({ result, spinning, wheelType }: { result: SpinResult | null; spinning: boolean; wheelType: WheelType }) {
   const [wheelRot, setWheelRot] = React.useState(0);
   const [ballRot, setBallRot] = React.useState(0);
 
+  const order = getWheelOrder(wheelType);
+  const slice = getPocketAngle(wheelType);
+  const N = getWheelSize(wheelType);
+
   React.useEffect(() => {
     if (!result) return;
-    const idx = WHEEL_ORDER.indexOf(result.number as (typeof WHEEL_ORDER)[number]);
-    // wheel rotates clockwise; ball counter-clockwise. We want pocket idx to land at top (pointer).
-    const wheelTarget = -idx * POCKET_ANGLE; // wheel rotates by -idx*slice so pocket idx goes to top
+    const idx = order.indexOf(result.number as never);
+    if (idx < 0) return;
+    const wheelTarget = -idx * slice;
     setWheelRot(prev => prev - (prev % 360) + 360 * 4 + wheelTarget);
-    // Ball stops at top relative to viewport, so its rotation = 0 mod 360 when stopped — but we add many turns the other way for visual.
     setBallRot(prev => prev - (prev % 360) - 360 * 6);
-  }, [result]);
+  }, [result, order, slice]);
+
+  // When wheel type changes, reset rotation so visuals don't carry over a stale angle.
+  React.useEffect(() => {
+    setWheelRot(0);
+    setBallRot(0);
+  }, [wheelType]);
 
   const cx = 150, cy = 150;
-  const outerR = 144;
   const numberR = 130;
   const innerR = 70;
   const labelR = 107;
@@ -31,7 +43,7 @@ export function RouletteWheel({ result, spinning }: { result: SpinResult | null;
           viewBox="0 0 300 300"
           style={{ transform: `rotate(${wheelRot}deg)` }}
           role="img"
-          aria-label="European roulette wheel"
+          aria-label={`${wheelType === "american" ? "American (double-zero)" : "European single-zero"} roulette wheel`}
         >
           <defs>
             <radialGradient id="hub" cx="50%" cy="50%">
@@ -44,10 +56,10 @@ export function RouletteWheel({ result, spinning }: { result: SpinResult | null;
               <stop offset="100%" stopColor="#2a1a08" />
             </radialGradient>
           </defs>
-          <circle cx={cx} cy={cy} r={outerR} fill="#241315" />
-          {WHEEL_ORDER.map((num, i) => {
-            const a1 = ((i * POCKET_ANGLE - 90 - POCKET_ANGLE / 2) * Math.PI) / 180;
-            const a2 = (((i + 1) * POCKET_ANGLE - 90 - POCKET_ANGLE / 2) * Math.PI) / 180;
+          <circle cx={cx} cy={cy} r={148} fill="#241315" />
+          {order.map((num, i) => {
+            const a1 = ((i * slice - 90 - slice / 2) * Math.PI) / 180;
+            const a2 = (((i + 1) * slice - 90 - slice / 2) * Math.PI) / 180;
             const x1 = cx + numberR * Math.cos(a1);
             const y1 = cy + numberR * Math.sin(a1);
             const x2 = cx + numberR * Math.cos(a2);
@@ -58,11 +70,13 @@ export function RouletteWheel({ result, spinning }: { result: SpinResult | null;
             const y4 = cy + innerR * Math.sin(a1);
             const color = getNumberColor(num);
             const fill = color === "green" ? "#149447" : color === "red" ? "#b91c1c" : "#0d1018";
-            const labelAngle = i * POCKET_ANGLE;
+            const labelAngle = i * slice;
             const lx = cx + labelR * Math.cos((labelAngle - 90) * (Math.PI / 180));
             const ly = cy + labelR * Math.sin((labelAngle - 90) * (Math.PI / 180));
+            // shrink font slightly when 38 pockets
+            const fontSize = N === 38 ? 8.5 : 10;
             return (
-              <g key={i}>
+              <g key={`${wheelType}-${i}`}>
                 <path
                   d={`M ${x1} ${y1} A ${numberR} ${numberR} 0 0 1 ${x2} ${y2} L ${x3} ${y3} A ${innerR} ${innerR} 0 0 0 ${x4} ${y4} Z`}
                   fill={fill}
@@ -73,24 +87,22 @@ export function RouletteWheel({ result, spinning }: { result: SpinResult | null;
                   x={lx}
                   y={ly}
                   fill="#fff"
-                  fontSize="10"
+                  fontSize={fontSize}
                   fontWeight="800"
                   textAnchor="middle"
                   dominantBaseline="middle"
                   transform={`rotate(${labelAngle}, ${lx}, ${ly})`}
                   style={{ fontFamily: "JetBrains Mono, monospace" }}
                 >
-                  {num}
+                  {pocketLabel(num)}
                 </text>
               </g>
             );
           })}
-          {/* Inner decorative cone */}
           <circle cx={cx} cy={cy} r={innerR} fill="url(#hubInner)" stroke="#5b3d18" strokeWidth="1.5" />
           <circle cx={cx} cy={cy} r={innerR - 16} fill="url(#hub)" stroke="#5b3d18" strokeWidth="1" />
           <circle cx={cx} cy={cy} r={innerR - 32} fill="#241315" />
           <circle cx={cx} cy={cy} r={6} fill="#f4c762" />
-          {/* spokes */}
           {[0, 60, 120, 180, 240, 300].map(angle => {
             const rad = (angle - 90) * (Math.PI / 180);
             const x = cx + (innerR - 4) * Math.cos(rad);

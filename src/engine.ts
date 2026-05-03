@@ -1,14 +1,39 @@
 // ============================================================
-//  Roulette engine — European single-zero (37 pockets)
+//  Roulette engine — European (single 0) and American (0 + 00)
+// ============================================================
+//  Internally, 00 is represented as the integer 37. Every public
+//  function takes/returns numbers with that convention.
 // ============================================================
 
-export const WHEEL_ORDER = [
+export type WheelType = "european" | "american";
+
+// European clockwise wheel (37 pockets)
+export const WHEEL_ORDER_EU = [
   0, 32, 15, 19, 4, 21, 2, 25, 17, 34, 6, 27, 13, 36, 11, 30, 8, 23, 10,
   5, 24, 16, 33, 1, 20, 14, 31, 9, 22, 18, 29, 7, 28, 12, 35, 3, 26,
 ] as const;
 
+// American clockwise wheel (38 pockets) — 37 is 00
+export const WHEEL_ORDER_US = [
+  0, 28, 9, 26, 30, 11, 7, 20, 32, 17, 5, 22, 34, 15, 3, 24, 36, 13, 1,
+  37, 27, 10, 25, 29, 12, 8, 19, 31, 18, 6, 21, 33, 16, 4, 23, 35, 14, 2,
+] as const;
+
+// 37 = "00" sentinel; treated as green
+export const ZERO_DOUBLE = 37;
+export function isZero(n: number): boolean { return n === 0 || n === ZERO_DOUBLE; }
+export function pocketLabel(n: number): string { return n === ZERO_DOUBLE ? "00" : String(n); }
+
+export function getWheelOrder(t: WheelType) { return t === "american" ? WHEEL_ORDER_US : WHEEL_ORDER_EU; }
+export function getWheelSize(t: WheelType): number { return t === "american" ? 38 : 37; }
+export function getPocketAngle(t: WheelType): number { return 360 / getWheelSize(t); }
+export function houseEdge(t: WheelType): number { return t === "american" ? -2 / 38 : -1 / 37; }
+
+// Backwards-compat aliases (still used by some legacy bits)
+export const WHEEL_ORDER = WHEEL_ORDER_EU;
+export const POCKET_ANGLE = 360 / WHEEL_ORDER_EU.length;
+
 export const REDS = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
-export const POCKET_ANGLE = 360 / WHEEL_ORDER.length;
 export const SPEEDS = [1, 2, 4, 8, 20, 50, 100] as const;
 
 export type BetKind =
@@ -32,6 +57,7 @@ export interface SimOptions {
   straightNumber: number;
   tableMax: number;
   manualBets?: Bet[];
+  wheelType: WheelType;
 }
 
 export interface StrategyState {
@@ -80,41 +106,56 @@ export interface MonteCarloSummary {
   worstEnding: number;
   bestEnding: number;
   profitableRate: number;
-  expectedEdgePerSpin: number;
+  /** Average $ change per played spin */
+  avgChangePerSpin: number;
+  /** Player return per dollar staked, across all runs */
+  realizedEdge: number;
   ruinHistogram: { labels: number[]; counts: number[] };
 }
 
-export const BET_OPTIONS: { value: BetKind; label: string; payout: number; coverage: number; help: string }[] = [
-  { value: "red",    label: "Red",      payout: 1, coverage: 18/37, help: "1:1. Wins on any red number; loses on black or 0." },
-  { value: "black",  label: "Black",    payout: 1, coverage: 18/37, help: "1:1. Wins on any black number; loses on red or 0." },
-  { value: "even",   label: "Even",     payout: 1, coverage: 18/37, help: "1:1. Wins on 2,4,6...36. Zero is NOT even." },
-  { value: "odd",    label: "Odd",      payout: 1, coverage: 18/37, help: "1:1. Wins on 1,3,5...35." },
-  { value: "low",    label: "1-18",     payout: 1, coverage: 18/37, help: "1:1. Wins on numbers 1 through 18." },
-  { value: "high",   label: "19-36",    payout: 1, coverage: 18/37, help: "1:1. Wins on numbers 19 through 36." },
-  { value: "dozen1", label: "1st dozen (1-12)",  payout: 2, coverage: 12/37, help: "2:1. Wins on 1-12." },
-  { value: "dozen2", label: "2nd dozen (13-24)", payout: 2, coverage: 12/37, help: "2:1. Wins on 13-24." },
-  { value: "dozen3", label: "3rd dozen (25-36)", payout: 2, coverage: 12/37, help: "2:1. Wins on 25-36." },
-  { value: "column1",label: "Column 1", payout: 2, coverage: 12/37, help: "2:1. Wins on 1,4,7...34 (left column)." },
-  { value: "column2",label: "Column 2", payout: 2, coverage: 12/37, help: "2:1. Wins on 2,5,8...35 (middle column)." },
-  { value: "column3",label: "Column 3", payout: 2, coverage: 12/37, help: "2:1. Wins on 3,6,9...36 (right column)." },
-  { value: "straight",label: "Straight number", payout: 35, coverage: 1/37, help: "35:1. Pick a single number 0-36. Highest payout, lowest hit rate." },
+// payout is fixed (defines the bet); coverage is computed at runtime from wheelType.
+export const BET_OPTIONS: { value: BetKind; label: string; payout: number; hits: number; help: string }[] = [
+  { value: "red",    label: "Red",      payout: 1, hits: 18, help: "1:1. Wins on any red number; loses on black or any zero." },
+  { value: "black",  label: "Black",    payout: 1, hits: 18, help: "1:1. Wins on any black number; loses on red or any zero." },
+  { value: "even",   label: "Even",     payout: 1, hits: 18, help: "1:1. Wins on 2,4,6...36. Zero (and 00) lose." },
+  { value: "odd",    label: "Odd",      payout: 1, hits: 18, help: "1:1. Wins on 1,3,5...35." },
+  { value: "low",    label: "1-18",     payout: 1, hits: 18, help: "1:1. Wins on numbers 1 through 18." },
+  { value: "high",   label: "19-36",    payout: 1, hits: 18, help: "1:1. Wins on numbers 19 through 36." },
+  { value: "dozen1", label: "1st dozen (1-12)",  payout: 2, hits: 12, help: "2:1. Wins on 1-12." },
+  { value: "dozen2", label: "2nd dozen (13-24)", payout: 2, hits: 12, help: "2:1. Wins on 13-24." },
+  { value: "dozen3", label: "3rd dozen (25-36)", payout: 2, hits: 12, help: "2:1. Wins on 25-36." },
+  { value: "column1",label: "Column 1", payout: 2, hits: 12, help: "2:1. Wins on 1,4,7...34 (left column)." },
+  { value: "column2",label: "Column 2", payout: 2, hits: 12, help: "2:1. Wins on 2,5,8...35 (middle column)." },
+  { value: "column3",label: "Column 3", payout: 2, hits: 12, help: "2:1. Wins on 3,6,9...36 (right column)." },
+  { value: "straight",label: "Straight number", payout: 35, hits: 1, help: "35:1. Pick a single pocket. Highest payout, lowest hit rate." },
 ];
+
+export function coverageOf(kind: BetKind, t: WheelType): number {
+  const opt = BET_OPTIONS.find(b => b.value === kind);
+  return (opt?.hits ?? 0) / getWheelSize(t);
+}
+
+export function expectedEdgeOf(kind: BetKind, t: WheelType): number {
+  const opt = BET_OPTIONS.find(b => b.value === kind)!;
+  const p = opt.hits / getWheelSize(t);
+  return p * opt.payout - (1 - p);
+}
 
 export const PROGRESSIONS: { value: Progression; label: string; help: string }[] = [
   { value: "flat", label: "Flat (no progression)",
     help: "Bet the SAME amount every spin. No progression. The honest baseline — pure house edge, no variance amplification." },
   { value: "martingale", label: "Martingale",
-    help: "DOUBLE the stake after every loss. One win recovers all prior losses + 1 base unit. Catastrophic on long losing runs or once you hit the table max." },
+    help: "DOUBLE the stake after every loss (best on even-money bets). When the desired stake exceeds the table max, the simulator caps the bet at the max — the system is broken at that point: a win no longer recovers prior losses." },
   { value: "reverse-martingale", label: "Reverse Martingale (Paroli)",
     help: "DOUBLE after every WIN, reset on a loss. Rides hot streaks with small downside. Still a losing system long-term — house edge unchanged." },
   { value: "dalembert", label: "D'Alembert",
     help: "Add 1 unit after a loss, subtract 1 after a win. Slow, gentle progression. Feels safer than Martingale; same negative expectation." },
   { value: "fibonacci", label: "Fibonacci",
-    help: "Stake follows Fibonacci (1,1,2,3,5,8,13...): +1 step on loss, -2 steps on win. Slower escalation than Martingale, same fate." },
+    help: "Stake follows Fibonacci (1,1,2,3,5,8,13...): +1 step on loss, -2 steps on win (best on even-money bets). The simulator caps the index at 15 (max multiplier 987×) for performance — long losing streaks past that point hold there until a win." },
   { value: "oscars", label: "Oscar's Grind",
     help: "Aim for +1 unit profit per series. Increase stake by 1 only after wins until target hit, then reset. Tight control; still negative EV." },
   { value: "labouchere", label: "Labouchère (cancellation)",
-    help: "Sequence like 1-2-3-4. Stake = first + last. Win → cross both off. Loss → append the loss size. Long losing streaks balloon the line." },
+    help: "Sequence like 1-2-3-4. Stake = first + last (best on even-money bets). Win → cross both off. Loss → append the loss size. The simulator caps the running line at 16 entries to keep it bounded; clearing the line restarts at 1-2-3-4." },
   { value: "manual", label: "Manual (casino-style table)",
     help: "Place chips on the table yourself for every spin. The same chip layout repeats each spin; clear and re-bet to change." },
 ];
@@ -129,11 +170,13 @@ function rand() {
   t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 }
-export const spinNumber = () => Math.floor(rand() * 37);
+export function spinNumber(t: WheelType = "european"): number {
+  return Math.floor(rand() * getWheelSize(t));
+}
 
 // ---------- bet evaluation ----------
 export function getNumberColor(n: number): "red" | "black" | "green" {
-  if (n === 0) return "green";
+  if (n === 0 || n === ZERO_DOUBLE) return "green";
   return REDS.has(n) ? "red" : "black";
 }
 export function getPayout(kind: BetKind): number {
@@ -142,7 +185,8 @@ export function getPayout(kind: BetKind): number {
   return 1;
 }
 export function isWinningBet(n: number, kind: BetKind, straight: number): boolean {
-  if (n === 0) return kind === "straight" && straight === 0;
+  // Either zero loses every bet except a straight bet on that exact zero.
+  if (n === 0 || n === ZERO_DOUBLE) return kind === "straight" && straight === n;
   switch (kind) {
     case "red": return REDS.has(n);
     case "black": return !REDS.has(n);
@@ -197,9 +241,16 @@ export function updateStrategyState(
   else if (p === "dalembert") out.stake = won ? Math.max(base, s.stake - base) : s.stake + base;
   else if (p === "fibonacci") out.fibIndex = won ? Math.max(0, s.fibIndex - 2) : s.fibIndex + 1;
   else if (p === "oscars") {
+    // Oscar's Grind: target +1 base unit per series.
+    // After a win, raise stake by 1 unit BUT never bet more than what would
+    // exactly hit the target on the next win — i.e. cap at (base - newSeriesProfit).
     const next = s.oscarsProfit + profit;
     if (next >= base) { out.oscarsProfit = 0; out.stake = base; }
-    else { out.oscarsProfit = next; out.stake = won ? Math.min(s.stake + base, base - next + base) : s.stake; }
+    else {
+      out.oscarsProfit = next;
+      const remaining = Math.max(base, base - next); // never below 1 base unit
+      out.stake = won ? Math.min(s.stake + base, remaining) : s.stake;
+    }
   } else if (p === "labouchere") {
     if (won) {
       out.labouchere = out.labouchere.length <= 2 ? [] : out.labouchere.slice(1, -1);
@@ -220,7 +271,7 @@ export function spinOnce(balance: number, state: StrategyState, opts: SimOptions
   if (opts.progression === "manual" && opts.manualBets && opts.manualBets.length > 0) {
     const totalStake = opts.manualBets.reduce((s, b) => s + b.amount, 0);
     if (totalStake > balance || totalStake <= 0) return { result: null, state, balance };
-    const n = spinNumber();
+    const n = spinNumber(opts.wheelType);
     let profit = 0;
     for (const b of opts.manualBets) profit += evalBet(b, n).profit;
     const won = profit > 0;
@@ -233,7 +284,7 @@ export function spinOnce(balance: number, state: StrategyState, opts: SimOptions
   // strategy: single bet on opts.betKind
   const stake = getStake(state, opts.progression, opts.baseStake, balance, opts.tableMax);
   if (stake <= 0) return { result: null, state, balance };
-  const n = spinNumber();
+  const n = spinNumber(opts.wheelType);
   const bet: Bet = { kind: opts.betKind, amount: stake, number: opts.betKind === "straight" ? opts.straightNumber : undefined };
   const { won, profit } = evalBet(bet, n);
   const newBalance = balance + profit;
@@ -299,17 +350,27 @@ export async function runMonteCarlo(
   const endings: number[] = [];
   const ruinSpins: number[] = [];
   let profitable = 0;
+  let totalSpinsPlayed = 0;
+  let totalStakedAll = 0;
+  let totalProfitAll = 0;
   const batch = 25;
   for (let r = 0; r < runs; r++) {
     let bal = starting;
     let st = makeStrategyState(opts.baseStake);
     let ruin: number | null = null;
+    let runStaked = 0;
+    let spinsPlayed = 0;
     for (let i = 1; i <= iterations; i++) {
       const next = spinOnce(bal, st, opts);
       if (!next.result) { ruin = i; break; }
+      runStaked += next.result.stake;
+      spinsPlayed++;
       st = next.state; bal = next.balance;
       if (bal <= 0) { ruin = i; bal = 0; break; }
     }
+    totalSpinsPlayed += spinsPlayed;
+    totalStakedAll += runStaked;
+    totalProfitAll += bal - starting;
     endings.push(bal);
     if (bal > starting) profitable++;
     if (ruin !== null) ruinSpins.push(ruin);
@@ -325,7 +386,10 @@ export async function runMonteCarlo(
   const avgRuin = ruinSpins.length ? ruinSpins.reduce((a, b) => a + b, 0) / ruinSpins.length : null;
   const sortedRuin = [...ruinSpins].sort((a, b) => a - b);
   const medRuin = sortedRuin.length ? sortedRuin[Math.floor(sortedRuin.length / 2)] : null;
-  const expEdge = (avgEnding - starting) / iterations;
+  // Avg $ change per spin played (excludes early-terminated empty slots)
+  const avgChangePerSpin = totalSpinsPlayed > 0 ? totalProfitAll / totalSpinsPlayed : 0;
+  // True realised edge: profit / staked. Should converge to the wheel's house edge.
+  const realizedEdge = totalStakedAll > 0 ? totalProfitAll / totalStakedAll : 0;
   return {
     runs, iterations,
     ruinRate: (ruinSpins.length / runs) * 100,
@@ -336,7 +400,8 @@ export async function runMonteCarlo(
     worstEnding: endings[0],
     bestEnding: endings[endings.length - 1],
     profitableRate: (profitable / runs) * 100,
-    expectedEdgePerSpin: expEdge,
+    avgChangePerSpin,
+    realizedEdge,
     ruinHistogram: histogram(ruinSpins, 18),
   };
 }

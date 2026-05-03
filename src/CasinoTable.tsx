@@ -1,5 +1,5 @@
 import React from "react";
-import { type Bet, type BetKind, REDS } from "./engine";
+import { type Bet, type BetKind, type WheelType, REDS, ZERO_DOUBLE, pocketLabel } from "./engine";
 
 interface Props {
   bets: Bet[];
@@ -7,6 +7,7 @@ interface Props {
   setChipSize: (v: number) => void;
   onPlace: (bet: Bet) => void;
   onClear: () => void;
+  wheelType: WheelType;
 }
 
 const CHIPS = [5, 10, 25, 100, 500, 1000];
@@ -32,7 +33,7 @@ function totalsByKey(bets: Bet[]): Map<string, number> {
   return m;
 }
 
-export function CasinoTable({ bets, chipSize, setChipSize, onPlace, onClear }: Props) {
+export function CasinoTable({ bets, chipSize, setChipSize, onPlace, onClear, wheelType }: Props) {
   const totals = React.useMemo(() => totalsByKey(bets), [bets]);
   const sumStake = bets.reduce((s, b) => s + b.amount, 0);
 
@@ -64,10 +65,18 @@ export function CasinoTable({ bets, chipSize, setChipSize, onPlace, onClear }: P
     <div>
       <div className="casino-table">
         <div className="numbers-wrap">
-          {/* zero spans full height on left */}
-          <div className="cell zero" onClick={() => place("straight", 0)} title="Straight 0 — pays 35:1">
-            0
-            {totals.get("straight:0") ? <div className="chip-stack">${totals.get("straight:0")}</div> : null}
+          {/* zeros span full height on left — 0 always; 00 only on American */}
+          <div className="zero-stack">
+            <div className="cell zero" onClick={() => place("straight", 0)} title="Straight 0 — pays 35:1">
+              0
+              {totals.get("straight:0") ? <div className="chip-stack">${totals.get("straight:0")}</div> : null}
+            </div>
+            {wheelType === "american" && (
+              <div className="cell zero" onClick={() => place("straight", ZERO_DOUBLE)} title="Straight 00 — pays 35:1">
+                {pocketLabel(ZERO_DOUBLE)}
+                {totals.get(`straight:${ZERO_DOUBLE}`) ? <div className="chip-stack">${totals.get(`straight:${ZERO_DOUBLE}`)}</div> : null}
+              </div>
+            )}
           </div>
           <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
             <div className="numbers-grid">
