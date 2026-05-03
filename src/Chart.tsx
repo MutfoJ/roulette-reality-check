@@ -443,7 +443,7 @@ export function FanChart({ spins, p1, p10, p25, p50, p75, p90, p99, mean, starti
     ctx.translate(16 * dpr, padT + plotH / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("Bankroll ($) — bands: p1-p99 / p10-p90 / p25-p75 / median", 0, 0);
+    ctx.fillText("Bankroll ($)", 0, 0);
     ctx.restore();
     // legend
     ctx.font = `${10 * dpr}px Inter, sans-serif`;
