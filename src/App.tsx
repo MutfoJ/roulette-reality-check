@@ -1,10 +1,10 @@
 import React from "react";
 import {
   Activity, BarChart3, CircleDollarSign, Gauge, LineChart,
-  Pause, Play, RotateCcw, Sparkles, Zap, ChevronRight, Layers, Target,
+  Pause, Play, RotateCcw, Sparkles, Zap, ChevronRight,
 } from "lucide-react";
 import {
-  WHEEL_ORDER, BET_OPTIONS, PROGRESSIONS, SPEEDS,
+  BET_OPTIONS, PROGRESSIONS, SPEEDS,
   fmtMoney, fmtPct, getNumberColor, calculateSummary, makeStrategyState,
   spinOnce, runMonteCarlo, getPayout,
   type Bet, type BetKind, type Progression, type ChartMode,
@@ -13,47 +13,6 @@ import {
 import { RouletteWheel } from "./Wheel";
 import { BankrollChart, HistogramChart } from "./Chart";
 import { CasinoTable } from "./CasinoTable";
-
-interface PresetStrategy {
-  id: string;
-  name: string;
-  progression: Progression;
-  betKind: BetKind;
-  baseStake: number;
-  straightNumber?: number;
-  description: string;
-  insight: string;
-}
-
-const PRESETS: PresetStrategy[] = [
-  { id: "flat-red", name: "Flat bet on Red", progression: "flat", betKind: "red", baseStake: 10,
-    description: "Bet a fixed amount on red every spin.",
-    insight: "The honest baseline — no progression, just the raw 2.70% house edge eroding the bankroll." },
-  { id: "martingale-red", name: "Martingale on Red", progression: "martingale", betKind: "red", baseStake: 10,
-    description: "Double on every loss, reset on a win.",
-    insight: "Wins look tidy until a streak collides with the table max or the bankroll." },
-  { id: "paroli-red", name: "Reverse Martingale (Paroli)", progression: "reverse-martingale", betKind: "red", baseStake: 10,
-    description: "Double after wins, reset on a loss.",
-    insight: "Rides hot streaks. House edge unchanged; long-term still negative." },
-  { id: "dalembert-black", name: "D'Alembert on Black", progression: "dalembert", betKind: "black", baseStake: 10,
-    description: "Add 1 unit on a loss, subtract 1 on a win.",
-    insight: "Gentler than Martingale; same negative expectation." },
-  { id: "fibonacci-red", name: "Fibonacci on Red", progression: "fibonacci", betKind: "red", baseStake: 5,
-    description: "Step up the Fibonacci ladder on losses, two steps back on wins.",
-    insight: "Slower escalation, same long-run fate." },
-  { id: "oscars-even", name: "Oscar's Grind on Even", progression: "oscars", betKind: "even", baseStake: 10,
-    description: "Try to win 1 unit per series; raise stake only after wins.",
-    insight: "Tight control. Variance still grinds it down." },
-  { id: "labouchere", name: "Labouchère on Red", progression: "labouchere", betKind: "red", baseStake: 5,
-    description: "Cancellation system: stake = first + last of a sequence.",
-    insight: "Long losing streaks balloon the line very quickly." },
-  { id: "straight-17", name: "Straight 17 (35:1)", progression: "flat", betKind: "straight", baseStake: 10, straightNumber: 17,
-    description: "Flat bet on a single number 17 — 35:1 payout.",
-    insight: "Same house edge in a noisier package: 35/37 lose, 35:1 wins." },
-  { id: "manual-table", name: "Manual (casino table)", progression: "manual", betKind: "red", baseStake: 10,
-    description: "Place chips on the table yourself. The same chip layout repeats each spin.",
-    insight: "Useful for exploring exotic combinations or mirroring a real session." },
-];
 
 const BANKROLL_PRESETS = [100, 500, 1000, 5000, 10000];
 
@@ -66,12 +25,10 @@ export default function App() {
   const [startingBalance, setStartingBalance] = React.useState(1000);
   const [balance, setBalance] = React.useState(1000);
 
-  const [presetId, setPresetId] = React.useState(PRESETS[1].id);
-  const preset = PRESETS.find(p => p.id === presetId)!;
-  const [progression, setProgression] = React.useState<Progression>(preset.progression);
-  const [betKind, setBetKind] = React.useState<BetKind>(preset.betKind);
-  const [baseStake, setBaseStake] = React.useState(preset.baseStake);
-  const [straightNumber, setStraightNumber] = React.useState(preset.straightNumber ?? 17);
+  const [progression, setProgression] = React.useState<Progression>("martingale");
+  const [betKind, setBetKind] = React.useState<BetKind>("red");
+  const [baseStake, setBaseStake] = React.useState(10);
+  const [straightNumber, setStraightNumber] = React.useState(17);
   const [tableMax, setTableMax] = React.useState(5000);
   const [targetSpins, setTargetSpins] = React.useState(500);
   const [speed, setSpeed] = React.useState<number>(8);
@@ -81,7 +38,7 @@ export default function App() {
   const [history, setHistory] = React.useState<number[]>([1000]);
   const [results, setResults] = React.useState<SpinResult[]>([]);
   const [lastResult, setLastResult] = React.useState<SpinResult | null>(null);
-  const [strategyState, setStrategyState] = React.useState<StrategyState>(makeStrategyState(preset.baseStake));
+  const [strategyState, setStrategyState] = React.useState<StrategyState>(makeStrategyState(10));
   const [chartMode, setChartMode] = React.useState<ChartMode>("money");
 
   // manual mode
@@ -111,16 +68,6 @@ export default function App() {
     const opt = BET_OPTIONS.find(b => b.value === betKind)!;
     return opt.coverage * opt.payout - (1 - opt.coverage);
   }, [betKind, progression]);
-
-  const applyPreset = (id: string) => {
-    const p = PRESETS.find(x => x.id === id) ?? PRESETS[0];
-    setPresetId(id);
-    setProgression(p.progression);
-    setBetKind(p.betKind);
-    setBaseStake(p.baseStake);
-    setStraightNumber(p.straightNumber ?? 17);
-    setStrategyState(makeStrategyState(p.baseStake));
-  };
 
   const reset = React.useCallback(() => {
     setIsRunning(false);
@@ -262,19 +209,7 @@ export default function App() {
           <div className="panel">
             <div className="section-title"><Zap size={14} /> Strategy</div>
             <label className="field">
-              <span className="label-row">Common preset <Help>Pre-configured combos of progression + bet target. Picking one updates Progression, Bet target, and Base stake below.</Help></span>
-              <select value={presetId} onChange={e => applyPreset(e.target.value)}>
-                {PRESETS.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-              </select>
-            </label>
-            <div className="strategy-note" style={{ marginTop: 10 }}>
-              <strong>{preset.name}</strong>
-              {preset.description}
-              <em>{preset.insight}</em>
-            </div>
-
-            <label className="field" style={{ marginTop: 10 }}>
-              <span className="label-row">Progression <Help>How the stake size changes from spin to spin. "Flat" = same every time. "Manual" lets you place chips on the casino table for each spin.</Help></span>
+              <span className="label-row">Progression <Help>How the stake size changes from spin to spin. "Flat" = same every time. "Manual" lets you place chips on the casino table for each spin. Combined with Bet target below, this fully describes the strategy.</Help></span>
               <select value={progression} onChange={e => { setProgression(e.target.value as Progression); setStrategyState(makeStrategyState(baseStake)); }}>
                 {PROGRESSIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
               </select>
