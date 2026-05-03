@@ -40,11 +40,11 @@ export type BetKind =
   | "red" | "black" | "even" | "odd" | "low" | "high"
   | "dozen1" | "dozen2" | "dozen3"
   | "column1" | "column2" | "column3"
-  | "straight";
+  | "straight" | "manual";
 
 export type Progression =
   | "flat" | "martingale" | "reverse-martingale" | "dalembert"
-  | "fibonacci" | "oscars" | "labouchere" | "manual";
+  | "fibonacci" | "oscars" | "labouchere";
 
 export type ChartMode = "money" | "percent" | "profit" | "drawdown" | "stake";
 
@@ -136,14 +136,19 @@ export const BET_OPTIONS: { value: BetKind; label: string; payout: number; hits:
   { value: "column2",label: "Column 2", payout: 2, hits: 12, help: "2:1. Wins on 2,5,8...35 (middle column)." },
   { value: "column3",label: "Column 3", payout: 2, hits: 12, help: "2:1. Wins on 3,6,9...36 (right column)." },
   { value: "straight",label: "Straight number", payout: 35, hits: 1, help: "35:1. Pick a single pocket. Highest payout, lowest hit rate." },
+  { value: "manual",  label: "Manual layout",   payout: 0, hits: 0, help: "Place chips on the casino table to define a custom bet layout. The chosen progression scales the entire layout each spin (e.g. Martingale doubles every chip after a loss)." },
 ];
 
 export function coverageOf(kind: BetKind, t: WheelType): number {
+  if (kind === "manual") return 0;
   const opt = BET_OPTIONS.find(b => b.value === kind);
   return (opt?.hits ?? 0) / getWheelSize(t);
 }
 
 export function expectedEdgeOf(kind: BetKind, t: WheelType): number {
+  // Manual layouts: every standard roulette bet has the same per-unit edge,
+  // so the edge of any manual mix is just the wheel edge.
+  if (kind === "manual") return houseEdge(t);
   const opt = BET_OPTIONS.find(b => b.value === kind)!;
   const p = opt.hits / getWheelSize(t);
   return p * opt.payout - (1 - p);
@@ -164,8 +169,6 @@ export const PROGRESSIONS: { value: Progression; label: string; help: string }[]
     help: "Aim for +1 unit profit per series. Increase stake by 1 only after wins until target hit, then reset. Tight control; still negative EV." },
   { value: "labouchere", label: "Labouchère (cancellation)",
     help: "Sequence like 1-2-3-4. Stake = first + last (best on even-money bets). Win → cross both off. Loss → append the loss size. The simulator caps the running line at 16 entries to keep it bounded; clearing the line restarts at 1-2-3-4." },
-  { value: "manual", label: "Manual (casino-style table)",
-    help: "Place chips on the table yourself for every spin. The same chip layout repeats each spin; clear and re-bet to change." },
 ];
 
 // ---------- PRNG ----------
@@ -189,6 +192,7 @@ export function getNumberColor(n: number): "red" | "black" | "green" {
 }
 export function getPayout(kind: BetKind): number {
   if (kind === "straight") return 35;
+  if (kind === "manual") return 0;
   if (kind.startsWith("dozen") || kind.startsWith("column")) return 2;
   return 1;
 }
@@ -209,6 +213,7 @@ export function isWinningBet(n: number, kind: BetKind, straight: number): boolea
     case "column2": return n % 3 === 2;
     case "column3": return n % 3 === 0;
     case "straight": return n === straight;
+    case "manual": return false;
   }
 }
 export function evalBet(b: Bet, n: number): { won: boolean; profit: number } {
@@ -275,20 +280,34 @@ export function updateStrategyState(
 export interface SpinReturn { result: SpinResult | null; state: StrategyState; balance: number; }
 
 export function spinOnce(balance: number, state: StrategyState, opts: SimOptions): SpinReturn {
-  // manual: use manualBets (any combination) — total stake is the sum
-  if (opts.progression === "manual" && opts.manualBets && opts.manualBets.length > 0) {
-    const totalStake = opts.manualBets.reduce((s, b) => s + b.amount, 0);
-    if (totalStake > balance || totalStake <= 0) return { result: null, state, balance };
+  // betKind = "manual": the chip layout's total stake IS the progression unit.
+  // Chip amounts are the actual bets; the progression multiplies every chip
+  // by the same factor each spin (Flat: 1× constantly. Martingale: 1×, 2×, 4×
+  // after losses, reset to 1× on a win. Etc.).
+  if (opts.betKind === "manual" && opts.manualBets && opts.manualBets.length > 0) {
+    const baseUnit = opts.manualBets.reduce((s, b) => s + b.amount, 0);
+    if (baseUnit <= 0) return { result: null, state, balance };
+    const stake = getStake(state, opts.progression, baseUnit, balance, opts.tableMax);
+    if (stake <= 0) return { result: null, state, balance };
+    const multiplier = stake / baseUnit;
+    const scaledBets: Bet[] = opts.manualBets.map(b => ({
+      ...b,
+      amount: Math.max(1, Math.round(b.amount * multiplier)),
+    }));
+    const totalStake = scaledBets.reduce((s, b) => s + b.amount, 0);
+    if (totalStake > balance) return { result: null, state, balance };
     const n = spinNumber(opts.wheelType);
     let profit = 0;
-    for (const b of opts.manualBets) profit += evalBet(b, n).profit;
+    for (const b of scaledBets) profit += evalBet(b, n).profit;
     const won = profit > 0;
     const newBalance = balance + profit;
+    const newState = updateStrategyState(state, opts.progression, baseUnit, won, profit, totalStake);
     return {
-      result: { number: n, won, stake: totalStake, profit, payout: 0, balance: newBalance, bets: opts.manualBets.map(b => ({ ...b })) },
-      state, balance: newBalance,
+      result: { number: n, won, stake: totalStake, profit, payout: 0, balance: newBalance, bets: scaledBets },
+      state: newState, balance: newBalance,
     };
   }
+
   // strategy: single bet on opts.betKind
   const stake = getStake(state, opts.progression, opts.baseStake, balance, opts.tableMax);
   if (stake <= 0) return { result: null, state, balance };

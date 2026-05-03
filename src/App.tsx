@@ -8,7 +8,7 @@ import {
   BET_OPTIONS, PROGRESSIONS, SPEEDS,
   fmtMoney, fmtPct, getNumberColor, calculateSummary, makeStrategyState,
   spinOnce, runMonteCarlo, getPayout, coverageOf, expectedEdgeOf,
-  houseEdge, pocketLabel,
+  pocketLabel,
   type Bet, type BetKind, type Progression, type ChartMode,
   type SpinResult, type SimOptions, type StrategyState,
   type MonteCarloSummary, type WheelType,
@@ -72,31 +72,31 @@ function Help({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-  const [startingBalance, setStartingBalance] = React.useState(1000);
-  const [balance, setBalance] = React.useState(1000);
+  const [startingBalance, setStartingBalance] = React.useState(10000);
+  const [balance, setBalance] = React.useState(10000);
 
   const [wheelType, setWheelType] = React.useState<WheelType>("european");
-  const [progression, setProgression] = React.useState<Progression>("martingale");
-  const [betKind, setBetKind] = React.useState<BetKind>("red");
-  const [baseStake, setBaseStake] = React.useState(10);
+  const [progression, setProgression] = React.useState<Progression>("flat");
+  const [betKind, setBetKind] = React.useState<BetKind>("manual");
+  const [baseStake, setBaseStake] = React.useState(100);
   const [straightNumber, setStraightNumber] = React.useState(17);
   const [tableMax, setTableMax] = React.useState(5000);
-  const [targetSpins, setTargetSpins] = React.useState(500);
+  const [targetSpins, setTargetSpins] = React.useState(10000);
   const [speed, setSpeed] = React.useState<number>(8);
   const [stopOnBust, setStopOnBust] = React.useState(true);
 
   const [isRunning, setIsRunning] = React.useState(false);
-  const [history, setHistory] = React.useState<number[]>([1000]);
+  const [history, setHistory] = React.useState<number[]>([10000]);
   const [results, setResults] = React.useState<SpinResult[]>([]);
   const [lastResult, setLastResult] = React.useState<SpinResult | null>(null);
-  const [strategyState, setStrategyState] = React.useState<StrategyState>(makeStrategyState(10));
+  const [strategyState, setStrategyState] = React.useState<StrategyState>(makeStrategyState(100));
   const [chartMode, setChartMode] = React.useState<ChartMode>("money");
 
   const [manualBets, setManualBets] = React.useState<Bet[]>([]);
   const [chipSize, setChipSize] = React.useState(10);
 
-  const [mcRuns, setMcRuns] = React.useState(500);
-  const [mcIterations, setMcIterations] = React.useState(1000);
+  const [mcRuns, setMcRuns] = React.useState(2000);
+  const [mcIterations, setMcIterations] = React.useState(10000);
   const [mcProgress, setMcProgress] = React.useState(0);
   const [mcRunning, setMcRunning] = React.useState(false);
   const [monteCarlo, setMonteCarlo] = React.useState<MonteCarloSummary | null>(null);
@@ -104,6 +104,8 @@ export default function App() {
   const [mcChartMode, setMcChartMode] = React.useState<McChartMode>("ruin");
 
   const [flashKey, setFlashKey] = React.useState(0);
+  const [singleSpinning, setSingleSpinning] = React.useState(false);
+  const singleSpinTimer = React.useRef<number | null>(null);
 
   const options: SimOptions = React.useMemo(
     () => ({ baseStake, progression, betKind, straightNumber, tableMax, manualBets, wheelType }),
@@ -113,17 +115,27 @@ export default function App() {
     () => calculateSummary(history, results, startingBalance),
     [history, results, startingBalance],
   );
-  const expectedEdge = React.useMemo(() => {
-    if (progression === "manual") return houseEdge(wheelType);
-    return expectedEdgeOf(betKind, wheelType);
-  }, [betKind, progression, wheelType]);
+  const expectedEdge = React.useMemo(
+    () => expectedEdgeOf(betKind, wheelType),
+    [betKind, wheelType],
+  );
   const expectedStake = React.useMemo(
-    () => progression === "manual" ? manualBets.reduce((s, b) => s + b.amount, 0) : baseStake,
-    [baseStake, manualBets, progression],
+    () => betKind === "manual"
+      ? manualBets.reduce((s, b) => s + b.amount, 0)
+      : baseStake,
+    [baseStake, manualBets, betKind],
   );
   const wheelCopy = wheelType === "american"
     ? { name: "American double-zero", pockets: "38 pockets", edge: "5.26%" }
     : { name: "European single-zero", pockets: "37 pockets", edge: "2.70%" };
+
+  const computeStrategyBase = React.useCallback(() => {
+    if (betKind === "manual") {
+      const total = manualBets.reduce((s, b) => s + b.amount, 0);
+      return total || baseStake;
+    }
+    return baseStake;
+  }, [betKind, manualBets, baseStake]);
 
   const reset = React.useCallback(() => {
     setIsRunning(false);
@@ -131,10 +143,10 @@ export default function App() {
     setHistory([startingBalance]);
     setResults([]);
     setLastResult(null);
-    setStrategyState(makeStrategyState(baseStake));
+    setStrategyState(makeStrategyState(computeStrategyBase()));
     setMonteCarlo(null);
     setMcProgress(0);
-  }, [baseStake, startingBalance]);
+  }, [computeStrategyBase, startingBalance]);
 
   const updateStarting = (v: number) => {
     const value = Math.max(1, Math.floor(v));
@@ -143,7 +155,7 @@ export default function App() {
     setHistory([value]);
     setResults([]);
     setLastResult(null);
-    setStrategyState(makeStrategyState(baseStake));
+    setStrategyState(makeStrategyState(computeStrategyBase()));
   };
 
   const changeWheel = (next: WheelType) => {
@@ -207,6 +219,32 @@ export default function App() {
 
   const quickRun = (n: number) => runBatch(n);
 
+  const singleSpin = () => {
+    if (singleSpinTimer.current !== null) window.clearTimeout(singleSpinTimer.current);
+    setSingleSpinning(true);
+    runBatch(1);
+    singleSpinTimer.current = window.setTimeout(() => {
+      setSingleSpinning(false);
+      singleSpinTimer.current = null;
+    }, 1150);
+  };
+
+  React.useEffect(() => () => {
+    if (singleSpinTimer.current !== null) window.clearTimeout(singleSpinTimer.current);
+  }, []);
+
+  // Strategy state's "base unit" depends on the bet target: for non-manual
+  // bet kinds it's the Base stake input; for manual it's the chips' total.
+  // Reset state whenever that effective unit (or the progression) changes.
+  const manualTotal = React.useMemo(
+    () => manualBets.reduce((s, b) => s + b.amount, 0),
+    [manualBets],
+  );
+  const strategyBase = betKind === "manual" ? (manualTotal || baseStake) : baseStake;
+  React.useEffect(() => {
+    setStrategyState(makeStrategyState(strategyBase));
+  }, [strategyBase, progression]);
+
   const computeMC = async () => {
     setMcRunning(true);
     setMcProgress(0);
@@ -260,7 +298,7 @@ export default function App() {
             <label className="field" style={{ marginTop: 10 }}>
               <span className="label-row">Base stake <Help>The unit chip size used by every progression. Manual mode ignores this; use the chip selector on the table instead.</Help></span>
               <input type="number" min={1} value={baseStake}
-                onChange={e => { const v = Math.max(1, Number(e.target.value)); setBaseStake(v); setStrategyState(makeStrategyState(v)); }} />
+                onChange={e => { const v = Math.max(1, Number(e.target.value)); setBaseStake(v); }} />
             </label>
             <label className="field" style={{ marginTop: 10 }}>
               <span className="label-row">Table maximum <Help>Casino-imposed cap on a single bet. Critical for Martingale-style systems: once capped, a win may not recover prior losses.</Help></span>
@@ -279,8 +317,8 @@ export default function App() {
           <div className="panel">
             <div className="section-title"><Zap size={14} /> Strategy</div>
             <label className="field">
-              <span className="label-row">Progression <Help>How the stake size changes from spin to spin. Manual lets you place chips on the casino table for each spin.</Help></span>
-              <select value={progression} onChange={e => { setProgression(e.target.value as Progression); setStrategyState(makeStrategyState(baseStake)); }}>
+              <span className="label-row">Progression <Help>How the stake size changes from spin to spin. Flat keeps it constant; the others scale up after losses (or wins) to chase recovery.</Help></span>
+              <select value={progression} onChange={e => setProgression(e.target.value as Progression)}>
                 {PROGRESSIONS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
               </select>
             </label>
@@ -289,34 +327,37 @@ export default function App() {
               {PROGRESSIONS.find(p => p.value === progression)!.help}
             </div>
 
-            {progression !== "manual" && (
-              <>
-                <label className="field" style={{ marginTop: 10 }}>
-                  <span className="label-row">Bet target <Help>What the progression bets on each spin. Straight numbers pay 35:1 but hit only one pocket.</Help></span>
-                  <select value={betKind} onChange={e => setBetKind(e.target.value as BetKind)}>
-                    {BET_OPTIONS.map(b => <option key={b.value} value={b.value}>{b.label}</option>)}
-                  </select>
-                </label>
-                <div className="strategy-note" style={{ marginTop: 8 }}>
-                  <strong>{BET_OPTIONS.find(b => b.value === betKind)!.label} - {getPayout(betKind)}:1</strong>
-                  {BET_OPTIONS.find(b => b.value === betKind)!.help}
-                  <em>Coverage: {(coverageOf(betKind, wheelType) * 100).toFixed(2)}% of pockets - House edge: -{wheelCopy.edge}</em>
-                </div>
-                {betKind === "straight" && (
-                  <label className="field" style={{ marginTop: 8 }}>
-                    <span className="label-row">Straight pocket <Help>Pick a single pocket. American mode adds 00 as a separate green pocket.</Help></span>
-                    <select value={straightNumber} onChange={e => setStraightNumber(Number(e.target.value))}>
-                      <option value={0}>0</option>
-                      {wheelType === "american" && <option value={37}>00</option>}
-                      {Array.from({ length: 36 }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
-                    </select>
-                  </label>
-                )}
-              </>
+            <label className="field" style={{ marginTop: 10 }}>
+              <span className="label-row">Bet target <Help>What the progression bets on each spin. Straight numbers pay 35:1 but hit only one pocket. Manual lets you place chips on the casino table to define a custom layout.</Help></span>
+              <select value={betKind} onChange={e => setBetKind(e.target.value as BetKind)}>
+                {BET_OPTIONS.map(b => <option key={b.value} value={b.value}>{b.label}</option>)}
+              </select>
+            </label>
+            <div className="strategy-note" style={{ marginTop: 8 }}>
+              <strong>
+                {BET_OPTIONS.find(b => b.value === betKind)!.label}
+                {betKind === "manual" ? "" : ` - ${getPayout(betKind)}:1`}
+              </strong>
+              {BET_OPTIONS.find(b => b.value === betKind)!.help}
+              <em>
+                {betKind === "manual"
+                  ? `Place chips below — those amounts are the bet unit. The progression multiplies every chip by the same factor each spin (Flat: x1 always. Martingale: x1, x2, x4 after losses, reset on a win). Base stake is ignored. House edge: -${wheelCopy.edge}`
+                  : `Coverage: ${(coverageOf(betKind, wheelType) * 100).toFixed(2)}% of pockets - House edge: -${wheelCopy.edge}`}
+              </em>
+            </div>
+            {betKind === "straight" && (
+              <label className="field" style={{ marginTop: 8 }}>
+                <span className="label-row">Straight pocket <Help>Pick a single pocket. American mode adds 00 as a separate green pocket.</Help></span>
+                <select value={straightNumber} onChange={e => setStraightNumber(Number(e.target.value))}>
+                  <option value={0}>0</option>
+                  {wheelType === "american" && <option value={37}>00</option>}
+                  {Array.from({ length: 36 }, (_, i) => i + 1).map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+              </label>
             )}
 
             <div className="edge-box" style={{ marginTop: 12 }}>
-              <span className="label-line">{progression === "manual" ? "Expected loss on current layout" : "Expected loss per base bet"}</span>
+              <span className="label-line">{betKind === "manual" ? "Expected loss on current layout" : "Expected loss per base bet"}</span>
               <strong>{fmtMoney(expectedStake * expectedEdge)}</strong>
               <em>Every {wheelCopy.name.toLowerCase()} standard bet averages -{wheelCopy.edge} per unit staked, regardless of progression.</em>
             </div>
@@ -337,7 +378,7 @@ export default function App() {
                 <button className="btn primary" onClick={() => setIsRunning(v => !v)} title={isRunning ? "Pause" : "Run continuously"}>
                   {isRunning ? <><Pause size={16} /> Pause</> : <><Play size={16} /> Run</>}
                 </button>
-                <button className="btn" onClick={() => quickRun(1)} disabled={isRunning} title="Single spin">
+                <button className="btn" onClick={singleSpin} disabled={isRunning || singleSpinning} title="Single spin">
                   <ChevronRight size={16} /> Spin
                 </button>
                 <button className="btn icon" onClick={reset} title="Reset bankroll & history"><RotateCcw size={16} /></button>
@@ -345,7 +386,7 @@ export default function App() {
             </div>
 
             <div className="wheel-shell">
-              <RouletteWheel result={lastResult} spinning={isRunning} wheelType={wheelType} />
+              <RouletteWheel result={lastResult} spinning={isRunning || singleSpinning} wheelType={wheelType} />
               <div className="wheel-info">
                 <div className="last-result">
                   <span
@@ -395,7 +436,7 @@ export default function App() {
               </div>
             </div>
 
-            {progression === "manual" && (
+            {betKind === "manual" && (
               <CasinoTable bets={manualBets} chipSize={chipSize} setChipSize={setChipSize} onPlace={placeBet} onClear={clearBets} wheelType={wheelType} />
             )}
           </div>
