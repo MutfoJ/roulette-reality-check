@@ -34,7 +34,7 @@ export const WHEEL_ORDER = WHEEL_ORDER_EU;
 export const POCKET_ANGLE = 360 / WHEEL_ORDER_EU.length;
 
 export const REDS = new Set([1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36]);
-export const SPEEDS = [1, 2, 4, 8, 20, 50, 100] as const;
+export const SPEEDS = [1, 2, 4, 8, 20, 50, 100, 1000, 10000] as const;
 
 export type BetKind =
   | "red" | "black" | "even" | "odd" | "low" | "high"
