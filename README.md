@@ -13,7 +13,7 @@
 
 ## What it does
 
-Pick a betting strategy, set a bankroll, hit Run. The simulator plays a real European roulette wheel against your chosen system — with exact payouts, configurable table maximums, and bankroll constraints — then shows the bankroll evolution, executive summary, and a Monte Carlo distribution of outcomes across thousands of independent sessions.
+Pick a betting strategy, set a bankroll, hit Run. The simulator plays a real European roulette wheel against your chosen system - with exact payouts, configurable table maximums, and bankroll constraints - then shows the bankroll evolution, executive summary, and a Monte Carlo distribution of outcomes across thousands of independent sessions.
 
 There is no winning strategy. The simulator's job is to make that fact obvious in numbers and pictures.
 
@@ -22,17 +22,17 @@ There is no winning strategy. The simulator's job is to make that fact obvious i
 ### Betting systems
 Eight classic progressions, each with its own explanation in-app:
 
-- **Flat** (control) — same stake every spin
-- **Martingale** — double on losses
-- **Reverse Martingale (Paroli)** — double on wins
-- **D'Alembert** — +1 unit on loss, −1 on win
-- **Fibonacci** — climb the Fibonacci ladder on losses
-- **Oscar's Grind** — target +1 unit per series
-- **Labouchère** — cancellation system with running sequence
-- **Manual (casino-style table)** — drop chips on a real felt layout
+- **Flat** (control) - same stake every spin
+- **Martingale** - double on losses
+- **Reverse Martingale (Paroli)** - double on wins
+- **D'Alembert** - +1 unit on loss, −1 on win
+- **Fibonacci** - climb the Fibonacci ladder on losses
+- **Oscar's Grind** - target +1 unit per series
+- **Labouchère** - cancellation system with running sequence
+- **Manual (casino-style table)** - drop chips on a real felt layout
 
 ### Bet targets
-All standard European bets — red, black, odd, even, 1-18, 19-36, dozens, columns, straight numbers — with payouts, coverage percentages, and explanations.
+All standard European bets - red, black, odd, even, 1-18, 19-36, dozens, columns, straight numbers - with payouts, coverage percentages, and explanations.
 
 ### Casino-style manual mode
 Click any number 0-36 or any outside bet to drop a chip. Real chip denominations ($5 / $10 / $25 / $100 / $500 / $1K) with color coding. The chip layout repeats each spin until you clear it.
@@ -68,7 +68,7 @@ Yellow `!` markers next to every option open hover-tooltips explaining what it d
 
 ```
 src/
-├── engine.ts        Pure simulation engine — PRNG, bet evaluation,
+├── engine.ts        Pure simulation engine - PRNG, bet evaluation,
 │                    every progression, Monte Carlo runner.
 │                    Zero React dependencies.
 ├── Wheel.tsx        SVG European wheel + independent ball orbit.
