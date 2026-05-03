@@ -76,8 +76,8 @@ export default function App() {
   const [balance, setBalance] = React.useState(10000);
 
   const [wheelType, setWheelType] = React.useState<WheelType>("european");
-  const [progression, setProgression] = React.useState<Progression>("flat");
-  const [betKind, setBetKind] = React.useState<BetKind>("manual");
+  const [progression, setProgression] = React.useState<Progression>("martingale");
+  const [betKind, setBetKind] = React.useState<BetKind>("red");
   const [baseStake, setBaseStake] = React.useState(100);
   const [straightNumber, setStraightNumber] = React.useState(17);
   const [tableMax, setTableMax] = React.useState(5000);
