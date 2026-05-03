@@ -433,17 +433,6 @@ export function FanChart({ spins, p1, p10, p25, p50, p75, p90, p99, mean, starti
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     });
     ctx.stroke();
-    // mean line (dashed magenta) — distinct from median to make divergence visible
-    ctx.beginPath();
-    ctx.lineWidth = 1.8 * dpr;
-    ctx.strokeStyle = "#f472b6";
-    ctx.setLineDash([5 * dpr, 4 * dpr]);
-    spins.forEach((s, i) => {
-      const x = x2px(s), y = y2px(mean[i]);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-    ctx.setLineDash([]);
     ctx.restore();
     // axis titles
     ctx.fillStyle = "rgba(244, 199, 98, 0.95)";
@@ -454,7 +443,7 @@ export function FanChart({ spins, p1, p10, p25, p50, p75, p90, p99, mean, starti
     ctx.translate(16 * dpr, padT + plotH / 2);
     ctx.rotate(-Math.PI / 2);
     ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("Bankroll ($) — bands: p1-p99 / p10-p90 / p25-p75 / median / mean", 0, 0);
+    ctx.fillText("Bankroll ($) — bands: p1-p99 / p10-p90 / p25-p75 / median", 0, 0);
     ctx.restore();
     // legend
     ctx.font = `${10 * dpr}px Inter, sans-serif`;
@@ -482,7 +471,6 @@ export function FanChart({ spins, p1, p10, p25, p50, p75, p90, p99, mean, starti
     swatch("rgba(76, 201, 240, 0.18)", "p10-p90");
     swatch("rgba(76, 201, 240, 0.10)", "p1-p99");
     swatch("#f4c762", "median", true, false);
-    swatch("#f472b6", "mean", true, true);
   }, [spins, p10, p25, p50, p75, p90, startingBalance]);
   return <canvas className="chart-canvas small" ref={ref} />;
 }
