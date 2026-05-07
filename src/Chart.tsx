@@ -2,11 +2,16 @@ import React from "react";
 import uPlot from "uplot";
 import { fmtMoney, type ChartMode, type SpinResult } from "./engine";
 
+export interface BankrollView { start: number; end: number }
+
 interface BankrollProps {
   history: number[];
   results: SpinResult[];
   mode: ChartMode;
   startingBalance: number;
+  /** Controlled zoom range (absolute spin indices). Null = full range. */
+  view: BankrollView | null;
+  onViewChange: (v: BankrollView | null) => void;
 }
 
 // "nice" tick step — standard 1/2/5×10^n picker for axis ticks
@@ -55,7 +60,8 @@ const Y_AXIS_TITLE: Record<ChartMode, string> = {
 //  Bankroll chart — canvas (preserves existing visual style)
 //  Adds hover crosshair tooltip, wheel-zoom, drag-pan, dbl-click reset.
 // ============================================================
-export function BankrollChart({ history, results, mode, startingBalance }: BankrollProps) {
+export function BankrollChart({ history, results, mode, startingBalance, view, onViewChange }: BankrollProps) {
+  const setView = onViewChange;
   const wrapRef = React.useRef<HTMLDivElement | null>(null);
   const baseRef = React.useRef<HTMLCanvasElement | null>(null);
   const overlayRef = React.useRef<HTMLCanvasElement | null>(null);
@@ -70,16 +76,17 @@ export function BankrollChart({ history, results, mode, startingBalance }: Bankr
     return [0, ...results.map(r => r.stake)];
   }, [history, results, mode, startingBalance]);
 
-  // [start, end] are absolute indices into `values`. Default = full range.
-  const [view, setView] = React.useState<{ start: number; end: number } | null>(null);
-  // Reset view when the underlying series identity changes substantially.
+  // Reset zoom when the bankroll resets (different startingBalance =
+  // simulation was reset). Mode changes preserve the zoom — switching
+  // between Raw $ / Profit / % is exactly when you'd want to keep it.
   React.useEffect(() => {
     setView(null);
-  }, [mode, startingBalance]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startingBalance]);
   // If values shrunk (e.g. user reset), drop a stale window.
   React.useEffect(() => {
     if (view && view.end >= values.length) setView(null);
-  }, [values.length, view]);
+  }, [values.length, view, setView]);
 
   const xMaxAbs = Math.max(0, values.length - 1);
   const start = view ? Math.max(0, Math.min(view.start, xMaxAbs)) : 0;
@@ -454,11 +461,13 @@ interface UplotMounterProps {
   data: UplotData;
   height: number;
   deps: React.DependencyList;
+  /** Apply an explicit X-scale range. Null = auto-fit to data. */
+  xRange?: { min: number; max: number } | null;
 }
 // A small wrapper component that owns the uPlot instance lifecycle.
 // Mounts only when the parent decides it should — i.e. never in the
 // empty state, so we don't get stray axes / 0-baseline marks.
-function UplotMounter({ innerRef, buildOpts, data, height, deps }: UplotMounterProps) {
+function UplotMounter({ innerRef, buildOpts, data, height, deps, xRange }: UplotMounterProps) {
   const plotRef = React.useRef<uPlot | null>(null);
 
   React.useEffect(() => {
@@ -466,6 +475,23 @@ function UplotMounter({ innerRef, buildOpts, data, height, deps }: UplotMounterP
     if (!el) return;
     const initW = Math.max(120, el.clientWidth || 600);
     const opts = buildOpts(initW, height);
+    // Belt-and-braces: even with cursor.points.show=false in opts and
+    // CSS display:none on .u-cursor-pt, certain uPlot setups still leave
+    // a 1-pixel-tall element at (0,0) that renders as a faint speck.
+    // Hard-hide them at instance creation.
+    const prevReady = opts.hooks?.ready ?? [];
+    opts.hooks = {
+      ...opts.hooks,
+      ready: [
+        ...(Array.isArray(prevReady) ? prevReady : [prevReady]),
+        (u: uPlot) => {
+          u.root.querySelectorAll<HTMLElement>(".u-cursor-pt").forEach(el => {
+            el.style.display = "none";
+            el.style.visibility = "hidden";
+          });
+        },
+      ],
+    };
     const u = new uPlot(opts, data, el);
     plotRef.current = u;
     const ro = new ResizeObserver(entries => {
@@ -488,6 +514,18 @@ function UplotMounter({ innerRef, buildOpts, data, height, deps }: UplotMounterP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
+  // Apply / release the externally-driven X scale.
+  React.useEffect(() => {
+    const u = plotRef.current;
+    if (!u) return;
+    if (xRange) {
+      u.setScale("x", { min: xRange.min, max: xRange.max });
+    } else {
+      const xs = u.data[0] as number[] | undefined;
+      if (xs && xs.length) u.setScale("x", { min: xs[0], max: xs[xs.length - 1] });
+    }
+  }, [xRange?.min, xRange?.max, data]);
+
   return <div ref={innerRef} className="chart-uplot" />;
 }
 
@@ -502,7 +540,7 @@ function EmptyChart({ message }: { message: string }) {
 // ============================================================
 //  Survival curve — uPlot
 // ============================================================
-export function SurvivalChart({ spins, alive }: { spins: number[]; alive: number[] }) {
+export function SurvivalChart({ spins, alive, xRange }: { spins: number[]; alive: number[]; xRange?: { min: number; max: number } | null }) {
   const ref = React.useRef<HTMLDivElement | null>(null);
   const empty = !spins.length;
   const data: UplotData = React.useMemo(
@@ -545,7 +583,7 @@ export function SurvivalChart({ spins, alive }: { spins: number[]; alive: number
   }
   return (
     <div className="chart-uplot-wrap small">
-      <UplotMounter innerRef={ref} buildOpts={buildOpts} data={data} height={260} deps={[]} />
+      <UplotMounter innerRef={ref} buildOpts={buildOpts} data={data} height={260} deps={[]} xRange={xRange ?? null} />
     </div>
   );
 }
@@ -554,10 +592,11 @@ export function SurvivalChart({ spins, alive }: { spins: number[]; alive: number
 //  Fan chart — uPlot with bands between percentile pairs
 // ============================================================
 export function FanChart({
-  spins, p1, p10, p25, p50, p75, p90, p99, mean: _mean, startingBalance,
+  spins, p1, p10, p25, p50, p75, p90, p99, mean: _mean, startingBalance, xRange,
 }: {
   spins: number[]; p1: number[]; p10: number[]; p25: number[]; p50: number[];
   p75: number[]; p90: number[]; p99: number[]; mean: number[]; startingBalance: number;
+  xRange?: { min: number; max: number } | null;
 }) {
   const ref = React.useRef<HTMLDivElement | null>(null);
   const empty = !spins.length;
@@ -632,7 +671,7 @@ export function FanChart({
   }
   return (
     <div className="chart-uplot-wrap small">
-      <UplotMounter innerRef={ref} buildOpts={buildOpts} data={data} height={320} deps={[startingBalance]} />
+      <UplotMounter innerRef={ref} buildOpts={buildOpts} data={data} height={320} deps={[startingBalance]} xRange={xRange ?? null} />
     </div>
   );
 }

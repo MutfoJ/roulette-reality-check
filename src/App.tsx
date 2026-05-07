@@ -15,7 +15,7 @@ import {
 } from "./engine";
 import { runMonteCarloInWorker } from "./mcClient";
 import { RouletteWheel } from "./Wheel";
-import { BankrollChart, HistogramChart, SurvivalChart, FanChart } from "./Chart";
+import { BankrollChart, HistogramChart, SurvivalChart, FanChart, type BankrollView } from "./Chart";
 import { CasinoTable } from "./CasinoTable";
 
 const BANKROLL_PRESETS = [100, 500, 1000, 5000, 10000];
@@ -290,6 +290,12 @@ export default function App() {
   const deferredHistory = React.useDeferredValue(history);
   const deferredResults = React.useDeferredValue(results);
 
+  // Shared zoom range, driven by the bankroll chart's drag-to-select.
+  // The spin-indexed Monte Carlo charts (Bankroll fan, Survival curve)
+  // mirror this range so users can compare at the same scale.
+  const [bankrollView, setBankrollView] = React.useState<BankrollView | null>(null);
+  const sharedXRange = bankrollView ? { min: bankrollView.start, max: bankrollView.end } : null;
+
   return (
     <main>
       <section className="hero">
@@ -489,7 +495,14 @@ export default function App() {
                 ))}
               </div>
             </div>
-            <BankrollChart history={deferredHistory} results={deferredResults} mode={chartMode} startingBalance={startingBalance} />
+            <BankrollChart
+              history={deferredHistory}
+              results={deferredResults}
+              mode={chartMode}
+              startingBalance={startingBalance}
+              view={bankrollView}
+              onViewChange={setBankrollView}
+            />
 
             <div className="summary-grid">
               <Metric label="Ending bankroll" value={fmtMoney(summary.endingBalance)} tone={summary.profit >= 0 ? "good" : "bad"} />
@@ -566,6 +579,7 @@ export default function App() {
                   <SurvivalChart
                     spins={monteCarlo?.survival.spins ?? []}
                     alive={monteCarlo?.survival.alive ?? []}
+                    xRange={sharedXRange}
                   />
                 )}
                 {mcChartMode === "final" && (
@@ -588,10 +602,11 @@ export default function App() {
                     p99={monteCarlo.fan.p99}
                     mean={monteCarlo.fan.mean}
                     startingBalance={monteCarlo.startingBalance}
+                    xRange={sharedXRange}
                   />
                 )}
                 {mcChartMode === "fan" && !monteCarlo && (
-                  <FanChart spins={[]} p1={[]} p10={[]} p25={[]} p50={[]} p75={[]} p90={[]} p99={[]} mean={[]} startingBalance={startingBalance} />
+                  <FanChart spins={[]} p1={[]} p10={[]} p25={[]} p50={[]} p75={[]} p90={[]} p99={[]} mean={[]} startingBalance={startingBalance} xRange={null} />
                 )}
               </div>
               <div>
