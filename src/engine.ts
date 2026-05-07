@@ -367,13 +367,53 @@ export function calculateSummary(history: number[], results: SpinResult[], start
 }
 
 // ---------- monte carlo ----------
-export async function runMonteCarlo(
+
+// In-place quickselect on a Float32Array. Used to compute fan-chart
+// percentile bands without paying for a full sort per checkpoint column.
+// Average O(n), worst O(n^2) — but median-of-three pivot makes worst-case
+// vanishingly rare on the bankroll distributions we feed it.
+function partition(arr: Float32Array, lo: number, hi: number, pivotIdx: number): number {
+  const pivot = arr[pivotIdx];
+  arr[pivotIdx] = arr[hi]; arr[hi] = pivot;
+  let store = lo;
+  for (let i = lo; i < hi; i++) {
+    if (arr[i] < pivot) {
+      const t = arr[store]; arr[store] = arr[i]; arr[i] = t;
+      store++;
+    }
+  }
+  const t = arr[store]; arr[store] = arr[hi]; arr[hi] = t;
+  return store;
+}
+function quickselect(arr: Float32Array, k: number, lo = 0, hi = arr.length - 1): number {
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const a = arr[lo], b = arr[mid], c = arr[hi];
+    let pIdx: number;
+    if ((a - b) * (c - a) >= 0) pIdx = lo;
+    else if ((b - a) * (c - b) >= 0) pIdx = mid;
+    else pIdx = hi;
+    pIdx = partition(arr, lo, hi, pIdx);
+    if (pIdx === k) return arr[k];
+    if (k < pIdx) hi = pIdx - 1; else lo = pIdx + 1;
+  }
+  return arr[k];
+}
+
+export interface MonteCarloProgress { done: number; total: number; }
+
+/**
+ * Synchronous Monte Carlo kernel. Designed to run either on the main thread
+ * (legacy / tiny runs) or inside a Web Worker. Calls `onProgress` ~50 times
+ * across the run regardless of size.
+ */
+export function runMonteCarloSync(
   runs: number,
   iterations: number,
   starting: number,
   opts: SimOptions,
-  onProgress?: (p: number) => void,
-): Promise<MonteCarloSummary> {
+  onProgress?: (p: MonteCarloProgress) => void,
+): MonteCarloSummary {
   const endings: number[] = [];
   const ruinSpins: number[] = [];
   let profitable = 0;
@@ -381,22 +421,19 @@ export async function runMonteCarlo(
   let totalStakedAll = 0;
   let totalProfitAll = 0;
 
-  // Checkpoint sub-sampling for fan chart + survival curve.
-  // Cap at K=200 evenly-spaced spin indices to bound memory at ~K*runs Float32s.
   const K = Math.min(200, iterations);
   const checkpoints = new Int32Array(K);
   for (let k = 0; k < K; k++) checkpoints[k] = Math.max(1, Math.round(((k + 1) * iterations) / K));
-  const samples = new Float32Array(K * runs); // bankroll at each (checkpoint, run); 0 if busted earlier
-  const aliveAt = new Uint32Array(K); // # of runs still solvent at each checkpoint
+  const samples = new Float32Array(K * runs);
+  const aliveAt = new Uint32Array(K);
 
-  // The progression's "unit" is the chip total when bet target = Manual,
-  // otherwise it's baseStake. Initialise strategy state with that unit so
-  // the first spin doesn't get an off-by-ratio multiplier.
   const stateBase = (opts.betKind === "manual" && opts.manualBets && opts.manualBets.length > 0)
     ? opts.manualBets.reduce((s, b) => s + b.amount, 0)
     : opts.baseStake;
 
-  const batch = 25;
+  // Adaptive: aim for ~50 progress reports total regardless of run count.
+  const reportEvery = Math.max(1, Math.floor(runs / 50));
+
   for (let r = 0; r < runs; r++) {
     let bal = starting;
     let st = makeStrategyState(stateBase);
@@ -416,7 +453,6 @@ export async function runMonteCarlo(
           if (bal <= 0) { ruin = i; bal = 0; alive = false; }
         }
       }
-      // Capture checkpoint sample at the end of spin i
       while (cpIdx < K && checkpoints[cpIdx] === i) {
         samples[cpIdx * runs + r] = alive ? bal : 0;
         if (alive) aliveAt[cpIdx]++;
@@ -429,10 +465,7 @@ export async function runMonteCarlo(
     endings.push(bal);
     if (bal > starting) profitable++;
     if (ruin !== null) ruinSpins.push(ruin);
-    if (r % batch === 0 && onProgress) {
-      onProgress(r / runs);
-      await new Promise(rs => setTimeout(rs, 0));
-    }
+    if (onProgress && r % reportEvery === 0) onProgress({ done: r, total: runs });
   }
   endings.sort((a, b) => a - b);
   const sum = endings.reduce((a, b) => a + b, 0);
@@ -441,28 +474,28 @@ export async function runMonteCarlo(
   const avgRuin = ruinSpins.length ? ruinSpins.reduce((a, b) => a + b, 0) / ruinSpins.length : null;
   const sortedRuin = [...ruinSpins].sort((a, b) => a - b);
   const medRuin = sortedRuin.length ? sortedRuin[Math.floor(sortedRuin.length / 2)] : null;
-  // Avg $ change per spin played (excludes early-terminated empty slots)
   const avgChangePerSpin = totalSpinsPlayed > 0 ? totalProfitAll / totalSpinsPlayed : 0;
-  // True realised edge: profit / staked. Should converge to the wheel's house edge.
   const realizedEdge = totalStakedAll > 0 ? totalProfitAll / totalStakedAll : 0;
 
-  // Build fan chart bands from checkpoint matrix (sort each column, pick percentiles).
+  // Fan-chart percentiles: quickselect each pick — O(n) avg vs O(n log n)
+  // of the previous full sort. Picks go low → high so each later select can
+  // start from the previous index, exploiting prior partial ordering.
   const fanSpins: number[] = Array.from(checkpoints);
   const p1: number[] = [], p10: number[] = [], p25: number[] = [], p50: number[] = [], p75: number[] = [], p90: number[] = [], p99: number[] = [], mean: number[] = [];
   const col = new Float32Array(runs);
   const pickIdx = (q: number) => Math.min(runs - 1, Math.max(0, Math.floor(runs * q)));
+  const idxs = [pickIdx(0.01), pickIdx(0.10), pickIdx(0.25), pickIdx(0.50), pickIdx(0.75), pickIdx(0.90), pickIdx(0.99)];
   for (let k = 0; k < K; k++) {
-    let sum = 0;
-    for (let r = 0; r < runs; r++) { const v = samples[k * runs + r]; col[r] = v; sum += v; }
-    col.sort();
-    p1.push(col[pickIdx(0.01)]);
-    p10.push(col[pickIdx(0.10)]);
-    p25.push(col[pickIdx(0.25)]);
-    p50.push(col[pickIdx(0.50)]);
-    p75.push(col[pickIdx(0.75)]);
-    p90.push(col[pickIdx(0.90)]);
-    p99.push(col[pickIdx(0.99)]);
-    mean.push(sum / runs);
+    let s = 0;
+    for (let r = 0; r < runs; r++) { const v = samples[k * runs + r]; col[r] = v; s += v; }
+    p1.push(quickselect(col, idxs[0]));
+    p10.push(quickselect(col, idxs[1], idxs[0]));
+    p25.push(quickselect(col, idxs[2], idxs[1]));
+    p50.push(quickselect(col, idxs[3], idxs[2]));
+    p75.push(quickselect(col, idxs[4], idxs[3]));
+    p90.push(quickselect(col, idxs[5], idxs[4]));
+    p99.push(quickselect(col, idxs[6], idxs[5]));
+    mean.push(s / runs);
   }
   const survivalAlive = Array.from(aliveAt, c => c / runs);
 
@@ -486,9 +519,29 @@ export async function runMonteCarlo(
   };
 }
 
+/** Legacy async wrapper. New code routes through the worker via mcClient. */
+export async function runMonteCarlo(
+  runs: number,
+  iterations: number,
+  starting: number,
+  opts: SimOptions,
+  onProgress?: (p: number) => void,
+): Promise<MonteCarloSummary> {
+  return runMonteCarloSync(runs, iterations, starting, opts, p => {
+    if (onProgress) onProgress(p.done / Math.max(1, p.total));
+  });
+}
+
 function histogram(arr: number[], bins: number): { labels: number[]; counts: number[] } {
   if (!arr.length) return { labels: [], counts: [] };
-  const min = Math.min(...arr), max = Math.max(...arr);
+  // Loop instead of Math.min/max(...arr): spread on a 100k-element array
+  // can blow the call-stack on some engines.
+  let min = arr[0], max = arr[0];
+  for (let i = 1; i < arr.length; i++) {
+    const v = arr[i];
+    if (v < min) min = v;
+    if (v > max) max = v;
+  }
   const w = Math.max(1, (max - min) / bins);
   const counts = new Array(bins).fill(0);
   for (const v of arr) counts[Math.min(bins - 1, Math.floor((v - min) / w))]++;

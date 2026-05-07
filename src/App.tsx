@@ -7,12 +7,13 @@ import {
 import {
   BET_OPTIONS, PROGRESSIONS, SPEEDS,
   fmtMoney, fmtPct, getNumberColor, calculateSummary, makeStrategyState,
-  spinOnce, runMonteCarlo, getPayout, coverageOf, expectedEdgeOf,
+  spinOnce, getPayout, coverageOf, expectedEdgeOf,
   pocketLabel,
   type Bet, type BetKind, type Progression, type ChartMode,
   type SpinResult, type SimOptions, type StrategyState,
   type MonteCarloSummary, type WheelType,
 } from "./engine";
+import { runMonteCarloInWorker } from "./mcClient";
 import { RouletteWheel } from "./Wheel";
 import { BankrollChart, HistogramChart, SurvivalChart, FanChart } from "./Chart";
 import { CasinoTable } from "./CasinoTable";
@@ -245,14 +246,36 @@ export default function App() {
     setStrategyState(makeStrategyState(strategyBase));
   }, [strategyBase, progression]);
 
+  const mcAbortRef = React.useRef<AbortController | null>(null);
   const computeMC = async () => {
+    if (mcAbortRef.current) mcAbortRef.current.abort();
+    const ac = new AbortController();
+    mcAbortRef.current = ac;
     setMcRunning(true);
     setMcProgress(0);
-    const res = await runMonteCarlo(mcRuns, mcIterations, startingBalance, options, p => setMcProgress(p));
-    setMonteCarlo(res);
-    setMcProgress(1);
-    setMcRunning(false);
+    try {
+      const res = await runMonteCarloInWorker({
+        runs: mcRuns,
+        iterations: mcIterations,
+        starting: startingBalance,
+        opts: options,
+        onProgress: p => setMcProgress(p),
+        signal: ac.signal,
+      });
+      if (ac.signal.aborted) return;
+      setMonteCarlo(res);
+      setMcProgress(1);
+    } catch (err) {
+      if ((err as { name?: string }).name !== "AbortError") {
+        console.error("Monte Carlo failed:", err);
+      }
+    } finally {
+      if (mcAbortRef.current === ac) mcAbortRef.current = null;
+      setMcRunning(false);
+    }
   };
+  const cancelMC = () => mcAbortRef.current?.abort();
+  React.useEffect(() => () => { mcAbortRef.current?.abort(); }, []);
 
   const placeBet = (b: Bet) => setManualBets(prev => [...prev, b]);
   const clearBets = () => setManualBets([]);
@@ -495,6 +518,11 @@ export default function App() {
                 <button className="btn primary" onClick={computeMC} disabled={mcRunning}>
                   <Activity size={14} /> {mcRunning ? "Running..." : "Run analysis"}
                 </button>
+                {mcRunning && (
+                  <button className="btn danger" onClick={cancelMC} title="Cancel running analysis">
+                    Cancel
+                  </button>
+                )}
               </div>
             </div>
             {mcRunning || mcProgress > 0 ? (

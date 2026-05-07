@@ -1,7 +1,8 @@
 import React from "react";
+import uPlot from "uplot";
 import { fmtMoney, type ChartMode, type SpinResult } from "./engine";
 
-interface Props {
+interface BankrollProps {
   history: number[];
   results: SpinResult[];
   mode: ChartMode;
@@ -28,8 +29,8 @@ function niceTicks(min: number, max: number, target = 6): number[] {
   return ticks;
 }
 
-function formatTick(v: number, mode: ChartMode): string {
-  if (mode === "percent") return `${v >= 0 ? "" : ""}${v.toFixed(0)}%`;
+function formatTick(v: number, mode: ChartMode | "money"): string {
+  if (mode === "percent") return `${v.toFixed(0)}%`;
   const a = Math.abs(v);
   if (a >= 1_000_000) return `$${(v / 1_000_000).toFixed(1)}M`;
   if (a >= 1_000) return `$${(v / 1_000).toFixed(a >= 10_000 ? 0 : 1)}k`;
@@ -50,23 +51,58 @@ const Y_AXIS_TITLE: Record<ChartMode, string> = {
   stake: "Stake size ($)",
 };
 
-export function BankrollChart({ history, results, mode, startingBalance }: Props) {
-  const ref = React.useRef<HTMLCanvasElement | null>(null);
+// ============================================================
+//  Bankroll chart — canvas (preserves existing visual style)
+//  Adds hover crosshair tooltip, wheel-zoom, drag-pan, dbl-click reset.
+// ============================================================
+export function BankrollChart({ history, results, mode, startingBalance }: BankrollProps) {
+  const wrapRef = React.useRef<HTMLDivElement | null>(null);
+  const baseRef = React.useRef<HTMLCanvasElement | null>(null);
+  const overlayRef = React.useRef<HTMLCanvasElement | null>(null);
 
+  // Series derived from current mode
+  const values = React.useMemo<number[]>(() => {
+    let runningPeak = startingBalance;
+    if (mode === "money") return history.slice();
+    if (mode === "profit") return history.map(b => b - startingBalance);
+    if (mode === "percent") return history.map(b => startingBalance ? ((b - startingBalance) / startingBalance) * 100 : 0);
+    if (mode === "drawdown") return history.map(b => { runningPeak = Math.max(runningPeak, b); return runningPeak - b; });
+    return [0, ...results.map(r => r.stake)];
+  }, [history, results, mode, startingBalance]);
+
+  // [start, end] are absolute indices into `values`. Default = full range.
+  const [view, setView] = React.useState<{ start: number; end: number } | null>(null);
+  // Reset view when the underlying series identity changes substantially.
   React.useEffect(() => {
-    const canvas = ref.current;
+    setView(null);
+  }, [mode, startingBalance]);
+  // If values shrunk (e.g. user reset), drop a stale window.
+  React.useEffect(() => {
+    if (view && view.end >= values.length) setView(null);
+  }, [values.length, view]);
+
+  const xMaxAbs = Math.max(0, values.length - 1);
+  const start = view ? Math.max(0, Math.min(view.start, xMaxAbs)) : 0;
+  const end = view ? Math.max(start + 1, Math.min(view.end, xMaxAbs)) : xMaxAbs;
+  const window = values.slice(start, end + 1);
+
+  // Padding info needed for hit-testing in mouse handlers; recomputed in draw.
+  const layoutRef = React.useRef({ padL: 0, padR: 0, padT: 0, padB: 0, W: 0, H: 0, plotW: 0, plotH: 0, dpr: 1, yMin: 0, yMax: 1, ySpan: 1 });
+
+  // Base draw — same logic as before, just operating on the windowed slice.
+  React.useEffect(() => {
+    const canvas = baseRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = window === undefined ? 1 : (typeof globalThis !== "undefined" ? (globalThis.devicePixelRatio || 1) : 1);
     const W = canvas.clientWidth * dpr;
     const H = canvas.clientHeight * dpr;
     canvas.width = W;
     canvas.height = H;
     ctx.clearRect(0, 0, W, H);
 
-    // padding: leave room for axis titles + tick labels
     const padL = 70 * dpr;
     const padR = 24 * dpr;
     const padT = 20 * dpr;
@@ -74,25 +110,18 @@ export function BankrollChart({ history, results, mode, startingBalance }: Props
     const plotW = W - padL - padR;
     const plotH = H - padT - padB;
 
-    let runningPeak = startingBalance;
-    let values: number[];
-    if (mode === "money") values = history.slice();
-    else if (mode === "profit") values = history.map(b => b - startingBalance);
-    else if (mode === "percent") values = history.map(b => startingBalance ? ((b - startingBalance) / startingBalance) * 100 : 0);
-    else if (mode === "drawdown") values = history.map(b => { runningPeak = Math.max(runningPeak, b); return runningPeak - b; });
-    else /* stake */ values = [0, ...results.map(r => r.stake)];
-
-    if (values.length < 2) {
+    if (window.length < 2) {
       ctx.fillStyle = "rgba(139, 149, 173, 0.6)";
       ctx.font = `${14 * dpr}px Inter, sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.fillText("No spins yet — press Run to start", W / 2, H / 2);
+      layoutRef.current = { padL, padR, padT, padB, W, H, plotW, plotH, dpr, yMin: 0, yMax: 1, ySpan: 1 };
       return;
     }
 
-    let minV = Math.min(...values);
-    let maxV = Math.max(...values);
+    let minV = Math.min(...window);
+    let maxV = Math.max(...window);
     if (mode === "money") {
       minV = Math.min(minV, startingBalance);
       maxV = Math.max(maxV, startingBalance);
@@ -105,12 +134,12 @@ export function BankrollChart({ history, results, mode, startingBalance }: Props
     const yMin = yTicks[0];
     const yMax = yTicks[yTicks.length - 1];
     const ySpan = yMax - yMin || 1;
-    const xMax = values.length - 1;
+    const xMaxLocal = window.length - 1;
 
-    const x2px = (i: number) => padL + (i / Math.max(1, xMax)) * plotW;
+    const x2px = (i: number) => padL + (i / Math.max(1, xMaxLocal)) * plotW;
     const y2px = (v: number) => padT + (1 - (v - yMin) / ySpan) * plotH;
 
-    // ---- Y grid + tick labels ----
+    // Y grid + tick labels
     ctx.font = `${11 * dpr}px "JetBrains Mono", monospace`;
     ctx.textAlign = "right";
     ctx.textBaseline = "middle";
@@ -118,36 +147,27 @@ export function BankrollChart({ history, results, mode, startingBalance }: Props
       const y = y2px(t);
       ctx.strokeStyle = "rgba(255,255,255,0.06)";
       ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(padL, y);
-      ctx.lineTo(W - padR, y);
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
       ctx.fillStyle = "rgba(203, 213, 225, 0.8)";
       ctx.fillText(formatTick(t, mode), padL - 8 * dpr, y);
     });
 
-    // ---- X axis ticks ----
-    const xTicks = niceTicks(0, xMax, Math.min(8, Math.max(2, Math.floor(plotW / (90 * dpr)))));
+    // X axis ticks — labels show absolute spin numbers (start + local index)
+    const localXTicks = niceTicks(0, xMaxLocal, Math.min(8, Math.max(2, Math.floor(plotW / (90 * dpr)))));
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
-    xTicks.forEach((t) => {
-      if (t < 0 || t > xMax) return;
+    localXTicks.forEach((t) => {
+      if (t < 0 || t > xMaxLocal) return;
       const x = x2px(t);
       ctx.strokeStyle = "rgba(255,255,255,0.06)";
-      ctx.beginPath();
-      ctx.moveTo(x, padT);
-      ctx.lineTo(x, H - padB);
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, H - padB); ctx.stroke();
       ctx.strokeStyle = "rgba(203, 213, 225, 0.4)";
-      ctx.beginPath();
-      ctx.moveTo(x, H - padB);
-      ctx.lineTo(x, H - padB + 4 * dpr);
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, H - padB); ctx.lineTo(x, H - padB + 4 * dpr); ctx.stroke();
       ctx.fillStyle = "rgba(203, 213, 225, 0.8)";
-      ctx.fillText(formatSpin(t), x, H - padB + 7 * dpr);
+      ctx.fillText(formatSpin(t + start), x, H - padB + 7 * dpr);
     });
 
-    // ---- axis lines ----
+    // axis frame
     ctx.strokeStyle = "rgba(255, 255, 255, 0.18)";
     ctx.lineWidth = 1.2 * dpr;
     ctx.beginPath();
@@ -156,7 +176,7 @@ export function BankrollChart({ history, results, mode, startingBalance }: Props
     ctx.lineTo(W - padR, H - padB);
     ctx.stroke();
 
-    // ---- baseline (start bankroll / zero) ----
+    // baseline (start bankroll / zero)
     if (mode === "money" || mode === "profit" || mode === "percent") {
       const baselineV = mode === "money" ? startingBalance : 0;
       if (baselineV >= yMin && baselineV <= yMax) {
@@ -164,21 +184,17 @@ export function BankrollChart({ history, results, mode, startingBalance }: Props
         ctx.strokeStyle = "rgba(244, 199, 98, 0.7)";
         ctx.setLineDash([6 * dpr, 6 * dpr]);
         ctx.lineWidth = 1.2 * dpr;
-        ctx.beginPath();
-        ctx.moveTo(padL, y);
-        ctx.lineTo(W - padR, y);
-        ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(W - padR, y); ctx.stroke();
         ctx.setLineDash([]);
         ctx.fillStyle = "rgba(244, 199, 98, 0.85)";
         ctx.font = `${10 * dpr}px Inter, sans-serif`;
-        ctx.textAlign = "left";
-        ctx.textBaseline = "bottom";
+        ctx.textAlign = "left"; ctx.textBaseline = "bottom";
         ctx.fillText("baseline", padL + 6 * dpr, y - 2 * dpr);
       }
     }
 
-    // ---- area fill ----
-    const finalUp = values[values.length - 1] >= values[0];
+    // area + line
+    const finalUp = window[window.length - 1] >= window[0];
     const lineColor =
       mode === "drawdown" ? "#fb7185" :
       mode === "stake" ? "#f4c762" :
@@ -188,18 +204,17 @@ export function BankrollChart({ history, results, mode, startingBalance }: Props
       mode === "stake" ? "rgba(244, 199, 98, 0.26)" :
       finalUp ? "rgba(74, 222, 128, 0.26)" : "rgba(251, 113, 133, 0.26)";
 
-    // clip to plot area
     ctx.save();
     ctx.beginPath();
     ctx.rect(padL, padT, plotW, plotH);
     ctx.clip();
 
     ctx.beginPath();
-    values.forEach((v, i) => {
+    window.forEach((v, i) => {
       const x = x2px(i), y = y2px(v);
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     });
-    ctx.lineTo(x2px(xMax), H - padB);
+    ctx.lineTo(x2px(xMaxLocal), H - padB);
     ctx.lineTo(x2px(0), H - padB);
     ctx.closePath();
     const grad = ctx.createLinearGradient(0, padT, 0, H - padB);
@@ -208,362 +223,436 @@ export function BankrollChart({ history, results, mode, startingBalance }: Props
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // line stroke
     ctx.beginPath();
     ctx.lineWidth = 2.2 * dpr;
     ctx.strokeStyle = lineColor;
-    values.forEach((v, i) => {
+    window.forEach((v, i) => {
       const x = x2px(i), y = y2px(v);
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     });
     ctx.stroke();
     ctx.restore();
 
-    // ---- last-point dot ----
-    const lx = x2px(values.length - 1);
-    const ly = y2px(values[values.length - 1]);
+    // last-point dot
+    const lx = x2px(window.length - 1);
+    const ly = y2px(window[window.length - 1]);
     ctx.fillStyle = lineColor;
-    ctx.beginPath();
-    ctx.arc(lx, ly, 4 * dpr, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(lx, ly, 4 * dpr, 0, Math.PI * 2); ctx.fill();
     ctx.strokeStyle = "rgba(0,0,0,0.6)";
     ctx.lineWidth = 1.5 * dpr;
     ctx.stroke();
 
-    // ---- axis titles ----
+    // axis titles
     ctx.fillStyle = "rgba(244, 199, 98, 0.95)";
     ctx.font = `700 ${11 * dpr}px Inter, sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "alphabetic";
+    ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
     ctx.fillText("Spin #", padL + plotW / 2, H - 8 * dpr);
-
     ctx.save();
     ctx.translate(16 * dpr, padT + plotH / 2);
     ctx.rotate(-Math.PI / 2);
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
+    ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(Y_AXIS_TITLE[mode], 0, 0);
     ctx.restore();
 
-  }, [history, results, mode, startingBalance]);
+    layoutRef.current = { padL, padR, padT, padB, W, H, plotW, plotH, dpr, yMin, yMax, ySpan };
+  }, [window, mode, startingBalance, start]);
 
-  return <canvas className="chart-canvas" ref={ref} />;
-}
+  // ----- Hover crosshair + tooltip on the overlay canvas -----
+  const [hover, setHover] = React.useState<{ x: number; y: number; idx: number } | null>(null);
 
-// ============================================================
-// Survival curve — % of runs still solvent at each spin index
-// ============================================================
-export function SurvivalChart({ spins, alive }: { spins: number[]; alive: number[] }) {
-  const ref = React.useRef<HTMLCanvasElement | null>(null);
+  // Redraw overlay when hover changes.
   React.useEffect(() => {
-    const canvas = ref.current; if (!canvas) return;
-    const ctx = canvas.getContext("2d"); if (!ctx) return;
-    const dpr = window.devicePixelRatio || 1;
-    const W = canvas.clientWidth * dpr, H = canvas.clientHeight * dpr;
-    canvas.width = W; canvas.height = H;
+    const canvas = overlayRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const { W, H, padL, padR, padT, padB, plotW, plotH, dpr, yMin, ySpan } = layoutRef.current;
+    canvas.width = W;
+    canvas.height = H;
     ctx.clearRect(0, 0, W, H);
-    const padL = 56 * dpr, padR = 16 * dpr, padT = 14 * dpr, padB = 46 * dpr;
-    const plotW = W - padL - padR, plotH = H - padT - padB;
-    if (!spins.length) {
-      ctx.fillStyle = "rgba(139, 149, 173, 0.6)";
-      ctx.font = `${13 * dpr}px Inter, sans-serif`;
-      ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText("Run Monte Carlo to see survival curve", W / 2, H / 2);
-      return;
-    }
-    const xMax = spins[spins.length - 1];
-    const yTicks = [0, 0.25, 0.5, 0.75, 1];
-    const x2px = (v: number) => padL + (v / xMax) * plotW;
-    const y2px = (v: number) => padT + (1 - v) * plotH;
-    // y grid + labels
-    ctx.font = `${10 * dpr}px "JetBrains Mono", monospace`;
-    ctx.textAlign = "right"; ctx.textBaseline = "middle";
-    yTicks.forEach((t) => {
-      const y = y2px(t);
-      ctx.strokeStyle = "rgba(255,255,255,0.06)";
-      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
-      ctx.fillStyle = "rgba(203, 213, 225, 0.8)";
-      ctx.fillText(`${(t * 100).toFixed(0)}%`, padL - 6 * dpr, y);
-    });
-    // x ticks
-    const xTicksRaw = niceTicks(0, xMax, 6);
-    ctx.textAlign = "center"; ctx.textBaseline = "top";
-    xTicksRaw.forEach((t) => {
-      if (t < 0 || t > xMax) return;
-      const x = x2px(t);
-      ctx.strokeStyle = "rgba(255,255,255,0.06)";
-      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
-      ctx.fillStyle = "rgba(203, 213, 225, 0.8)";
-      ctx.fillText(formatSpin(t), x, padT + plotH + 6 * dpr);
-    });
-    // axis lines
-    ctx.strokeStyle = "rgba(255,255,255,0.18)"; ctx.lineWidth = 1.1 * dpr;
-    ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH); ctx.lineTo(padL + plotW, padT + plotH); ctx.stroke();
-    // area fill
+    if (!hover || window.length < 2) return;
+    const xMaxLocal = window.length - 1;
+    const localIdx = hover.idx - start;
+    if (localIdx < 0 || localIdx > xMaxLocal) return;
+    const v = window[localIdx];
+    const x = padL + (localIdx / Math.max(1, xMaxLocal)) * plotW;
+    const y = padT + (1 - (v - yMin) / ySpan) * plotH;
+
+    // crosshair
     ctx.save();
     ctx.beginPath();
     ctx.rect(padL, padT, plotW, plotH);
     ctx.clip();
+    ctx.strokeStyle = "rgba(244, 199, 98, 0.45)";
+    ctx.setLineDash([4 * dpr, 4 * dpr]);
+    ctx.lineWidth = 1 * dpr;
     ctx.beginPath();
-    spins.forEach((s, i) => {
-      const x = x2px(s), y = y2px(alive[i]);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    });
-    ctx.lineTo(x2px(xMax), padT + plotH);
-    ctx.lineTo(padL, padT + plotH);
-    ctx.closePath();
-    const grad = ctx.createLinearGradient(0, padT, 0, padT + plotH);
-    grad.addColorStop(0, "rgba(74, 222, 128, 0.30)");
-    grad.addColorStop(1, "rgba(74, 222, 128, 0.02)");
-    ctx.fillStyle = grad; ctx.fill();
-    // line
-    ctx.beginPath();
-    ctx.lineWidth = 2.2 * dpr;
-    ctx.strokeStyle = "#4ade80";
-    spins.forEach((s, i) => {
-      const x = x2px(s), y = y2px(alive[i]);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    });
+    ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH);
+    ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y);
     ctx.stroke();
+    ctx.setLineDash([]);
     ctx.restore();
-    // axis titles
-    ctx.fillStyle = "rgba(244, 199, 98, 0.95)";
-    ctx.font = `700 ${10 * dpr}px Inter, sans-serif`;
-    ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
-    ctx.fillText("Spin #", padL + plotW / 2, H - 8 * dpr);
-    ctx.save();
-    ctx.translate(14 * dpr, padT + plotH / 2);
-    ctx.rotate(-Math.PI / 2);
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("% of runs still solvent", 0, 0);
-    ctx.restore();
-  }, [spins, alive]);
-  return <canvas className="chart-canvas small" ref={ref} />;
-}
 
-// ============================================================
-// Fan chart — bankroll percentile bands at each checkpoint
-// ============================================================
-export function FanChart({ spins, p1, p10, p25, p50, p75, p90, p99, mean, startingBalance }:
-  { spins: number[]; p1: number[]; p10: number[]; p25: number[]; p50: number[]; p75: number[]; p90: number[]; p99: number[]; mean: number[]; startingBalance: number }) {
-  const ref = React.useRef<HTMLCanvasElement | null>(null);
-  React.useEffect(() => {
-    const canvas = ref.current; if (!canvas) return;
-    const ctx = canvas.getContext("2d"); if (!ctx) return;
-    const dpr = window.devicePixelRatio || 1;
-    const W = canvas.clientWidth * dpr, H = canvas.clientHeight * dpr;
-    canvas.width = W; canvas.height = H;
-    ctx.clearRect(0, 0, W, H);
-    const padL = 70 * dpr, padR = 24 * dpr, padT = 18 * dpr, padB = 50 * dpr;
-    const plotW = W - padL - padR, plotH = H - padT - padB;
-    if (!spins.length) {
-      ctx.fillStyle = "rgba(139, 149, 173, 0.6)";
-      ctx.font = `${13 * dpr}px Inter, sans-serif`;
-      ctx.textAlign = "center"; ctx.textBaseline = "middle";
-      ctx.fillText("Run Monte Carlo to see bankroll fan chart", W / 2, H / 2);
-      return;
-    }
-    const xMax = spins[spins.length - 1];
-    let minV = Math.min(0, ...p1, startingBalance);
-    let maxV = Math.max(...p99, startingBalance);
-    if (maxV - minV < 1) maxV = minV + 1;
-    const yTicks = niceTicks(minV, maxV, 6);
-    const yMin = yTicks[0], yMax = yTicks[yTicks.length - 1];
-    const ySpan = yMax - yMin || 1;
-    const x2px = (v: number) => padL + (v / xMax) * plotW;
-    const y2px = (v: number) => padT + (1 - (v - yMin) / ySpan) * plotH;
-    // y grid + labels
+    // dot
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(x, y, 4 * dpr, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.7)";
+    ctx.lineWidth = 1.5 * dpr;
+    ctx.stroke();
+
+    // tooltip box
+    const lines = [
+      `Spin ${formatSpin(hover.idx)}`,
+      mode === "percent" ? `${v >= 0 ? "+" : ""}${v.toFixed(2)}%` :
+      mode === "stake" ? `${fmtMoney(v)} stake` :
+      mode === "profit" ? `${v >= 0 ? "+" : ""}${fmtMoney(v)}` :
+      mode === "drawdown" ? `−${fmtMoney(v)}` :
+      fmtMoney(v),
+    ];
     ctx.font = `${11 * dpr}px "JetBrains Mono", monospace`;
-    ctx.textAlign = "right"; ctx.textBaseline = "middle";
-    yTicks.forEach((t) => {
-      const y = y2px(t);
-      ctx.strokeStyle = "rgba(255,255,255,0.06)";
-      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
-      ctx.fillStyle = "rgba(203, 213, 225, 0.8)";
-      ctx.fillText(formatTick(t, "money"), padL - 8 * dpr, y);
-    });
-    // x ticks
-    const xTicksRaw = niceTicks(0, xMax, 6);
-    ctx.textAlign = "center"; ctx.textBaseline = "top";
-    xTicksRaw.forEach((t) => {
-      if (t < 0 || t > xMax) return;
-      const x = x2px(t);
-      ctx.strokeStyle = "rgba(255,255,255,0.06)";
-      ctx.beginPath(); ctx.moveTo(x, padT); ctx.lineTo(x, padT + plotH); ctx.stroke();
-      ctx.fillStyle = "rgba(203, 213, 225, 0.8)";
-      ctx.fillText(formatSpin(t), x, padT + plotH + 6 * dpr);
-    });
-    // axis lines
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.18)"; ctx.lineWidth = 1.1 * dpr;
-    ctx.beginPath(); ctx.moveTo(padL, padT); ctx.lineTo(padL, padT + plotH); ctx.lineTo(padL + plotW, padT + plotH); ctx.stroke();
-    // baseline (starting bankroll)
-    if (startingBalance >= yMin && startingBalance <= yMax) {
-      const y = y2px(startingBalance);
-      ctx.strokeStyle = "rgba(244, 199, 98, 0.7)";
-      ctx.setLineDash([6 * dpr, 6 * dpr]);
-      ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(padL + plotW, y); ctx.stroke();
-      ctx.setLineDash([]);
-    }
-    // bands: 10-90 then 25-75 (nested)
-    ctx.save();
-    ctx.beginPath(); ctx.rect(padL, padT, plotW, plotH); ctx.clip();
-    const drawBand = (lo: number[], hi: number[], fill: string) => {
-      ctx.beginPath();
-      spins.forEach((s, i) => {
-        const x = x2px(s), y = y2px(hi[i]);
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      });
-      for (let i = spins.length - 1; i >= 0; i--) {
-        const x = x2px(spins[i]), y = y2px(lo[i]);
-        ctx.lineTo(x, y);
-      }
-      ctx.closePath();
-      ctx.fillStyle = fill;
-      ctx.fill();
-    };
-    drawBand(p1, p99, "rgba(76, 201, 240, 0.10)"); // outermost
-    drawBand(p10, p90, "rgba(76, 201, 240, 0.18)"); // outer
-    drawBand(p25, p75, "rgba(76, 201, 240, 0.30)"); // inner
-    // median line (solid gold)
+    const tw = Math.max(...lines.map(l => ctx.measureText(l).width)) + 16 * dpr;
+    const th = lines.length * 16 * dpr + 10 * dpr;
+    let tx = x + 12 * dpr;
+    if (tx + tw > padL + plotW) tx = x - tw - 12 * dpr;
+    let ty = y - th - 8 * dpr;
+    if (ty < padT + 4 * dpr) ty = y + 12 * dpr;
+    ctx.fillStyle = "rgba(5,7,9,0.92)";
+    ctx.strokeStyle = "rgba(244, 199, 98, 0.5)";
+    ctx.lineWidth = 1 * dpr;
     ctx.beginPath();
-    ctx.lineWidth = 2.2 * dpr;
-    ctx.strokeStyle = "#f4c762";
-    spins.forEach((s, i) => {
-      const x = x2px(s), y = y2px(p50[i]);
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-    ctx.restore();
-    // axis titles
-    ctx.fillStyle = "rgba(244, 199, 98, 0.95)";
-    ctx.font = `700 ${11 * dpr}px Inter, sans-serif`;
-    ctx.textAlign = "center"; ctx.textBaseline = "alphabetic";
-    ctx.fillText("Spin #", padL + plotW / 2, H - 8 * dpr);
-    ctx.save();
-    ctx.translate(16 * dpr, padT + plotH / 2);
-    ctx.rotate(-Math.PI / 2);
-    ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText("Bankroll ($)", 0, 0);
-    ctx.restore();
-    // legend
-    ctx.font = `${10 * dpr}px Inter, sans-serif`;
+    const r = 6 * dpr;
+    ctx.moveTo(tx + r, ty);
+    ctx.lineTo(tx + tw - r, ty);
+    ctx.quadraticCurveTo(tx + tw, ty, tx + tw, ty + r);
+    ctx.lineTo(tx + tw, ty + th - r);
+    ctx.quadraticCurveTo(tx + tw, ty + th, tx + tw - r, ty + th);
+    ctx.lineTo(tx + r, ty + th);
+    ctx.quadraticCurveTo(tx, ty + th, tx, ty + th - r);
+    ctx.lineTo(tx, ty + r);
+    ctx.quadraticCurveTo(tx, ty, tx + r, ty);
+    ctx.closePath();
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#f1f5f9";
     ctx.textAlign = "left"; ctx.textBaseline = "top";
-    const lx = padL + 8 * dpr, ly = padT + 4 * dpr;
-    let cx = lx;
-    const swatch = (fill: string, label: string, isLine = false, dashed = false) => {
-      if (isLine) {
-        ctx.fillStyle = fill;
-        if (dashed) {
-          ctx.fillRect(cx, ly + 5 * dpr, 4 * dpr, 2 * dpr);
-          ctx.fillRect(cx + 7 * dpr, ly + 5 * dpr, 4 * dpr, 2 * dpr);
-        } else {
-          ctx.fillRect(cx, ly + 5 * dpr, 12 * dpr, 2 * dpr);
-        }
-      } else {
-        ctx.fillStyle = fill;
-        ctx.fillRect(cx, ly + 2 * dpr, 12 * dpr, 8 * dpr);
-      }
-      ctx.fillStyle = "rgba(203, 213, 225, 0.85)";
-      ctx.fillText(label, cx + 16 * dpr, ly);
-      cx += 16 * dpr + ctx.measureText(label).width + 12 * dpr;
-    };
-    swatch("rgba(76, 201, 240, 0.30)", "p25-p75");
-    swatch("rgba(76, 201, 240, 0.18)", "p10-p90");
-    swatch("rgba(76, 201, 240, 0.10)", "p1-p99");
-    swatch("#f4c762", "median", true, false);
-  }, [spins, p10, p25, p50, p75, p90, startingBalance]);
-  return <canvas className="chart-canvas small" ref={ref} />;
-}
+    lines.forEach((l, i) => {
+      ctx.fillStyle = i === 0 ? "rgba(244,199,98,0.95)" : "#f1f5f9";
+      ctx.fillText(l, tx + 8 * dpr, ty + 6 * dpr + i * 16 * dpr);
+    });
+  }, [hover, window, mode, start]);
 
-export function HistogramChart({ data, color = "#f4c762", xLabel = "Spins until ruin", yLabel = "# of trials" }: { data: { labels: number[]; counts: number[] }; color?: string; xLabel?: string; yLabel?: string }) {
-  const ref = React.useRef<HTMLCanvasElement | null>(null);
+  // Mouse handlers — translate clientX to absolute spin index, manage view window.
+  const dragRef = React.useRef<{ originX: number; originStart: number; originEnd: number; moved: boolean } | null>(null);
 
-  React.useEffect(() => {
-    const canvas = ref.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) return;
-    const dpr = window.devicePixelRatio || 1;
-    const W = canvas.clientWidth * dpr;
-    const H = canvas.clientHeight * dpr;
-    canvas.width = W; canvas.height = H;
-    ctx.clearRect(0, 0, W, H);
+  const indexAtClientX = (clientX: number): number | null => {
+    const wrap = wrapRef.current;
+    if (!wrap || window.length < 2) return null;
+    const rect = wrap.getBoundingClientRect();
+    const { padL, padR, dpr } = layoutRef.current;
+    const cssPadL = padL / dpr;
+    const cssPadR = padR / dpr;
+    const plotW = rect.width - cssPadL - cssPadR;
+    const px = clientX - rect.left - cssPadL;
+    if (px < 0 || px > plotW) return null;
+    const xMaxLocal = window.length - 1;
+    const local = Math.round((px / plotW) * xMaxLocal);
+    return Math.max(0, Math.min(xMaxLocal, local)) + start;
+  };
 
-    const padL = 56 * dpr, padR = 16 * dpr, padT = 14 * dpr, padB = 46 * dpr;
-    const plotW = W - padL - padR;
-    const plotH = H - padT - padB;
-
-    if (!data.counts.length || data.counts.every(c => c === 0)) {
-      ctx.fillStyle = "rgba(139, 149, 173, 0.6)";
-      ctx.font = `${13 * dpr}px Inter, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.fillText("Run Monte Carlo to see distribution", W / 2, H / 2);
+  const onMouseMove = (e: React.MouseEvent) => {
+    const drag = dragRef.current;
+    if (drag) {
+      const wrap = wrapRef.current!;
+      const rect = wrap.getBoundingClientRect();
+      const { padL, padR, dpr } = layoutRef.current;
+      const cssPadL = padL / dpr;
+      const cssPadR = padR / dpr;
+      const plotW = Math.max(1, rect.width - cssPadL - cssPadR);
+      const dxPx = e.clientX - drag.originX;
+      const span = drag.originEnd - drag.originStart;
+      const dxIdx = -Math.round((dxPx / plotW) * span);
+      let s = drag.originStart + dxIdx;
+      let en = drag.originEnd + dxIdx;
+      if (s < 0) { en -= s; s = 0; }
+      if (en > xMaxAbs) { s -= (en - xMaxAbs); en = xMaxAbs; }
+      s = Math.max(0, s); en = Math.min(xMaxAbs, en);
+      if (en - s < 2) return;
+      if (Math.abs(dxPx) > 3) drag.moved = true;
+      setView({ start: s, end: en });
       return;
     }
-    const max = Math.max(...data.counts);
-    const yTicks = niceTicks(0, max, 4);
-    const yMax = yTicks[yTicks.length - 1];
+    const idx = indexAtClientX(e.clientX);
+    if (idx === null) { setHover(null); return; }
+    setHover({ x: e.clientX, y: e.clientY, idx });
+  };
+  const onMouseLeave = () => { setHover(null); dragRef.current = null; };
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
+    dragRef.current = { originX: e.clientX, originStart: start, originEnd: end, moved: false };
+  };
+  const onMouseUp = () => { dragRef.current = null; };
+  const onDoubleClick = () => setView(null);
+  const onWheel = (e: React.WheelEvent) => {
+    if (xMaxAbs < 2) return;
+    e.preventDefault();
+    const idx = indexAtClientX(e.clientX);
+    if (idx === null) return;
+    const factor = e.deltaY > 0 ? 1.25 : 1 / 1.25;
+    const span = end - start;
+    const newSpan = Math.max(2, Math.min(xMaxAbs, Math.round(span * factor)));
+    if (newSpan === span) return;
+    // Keep `idx` at the same screen ratio.
+    const ratio = (idx - start) / Math.max(1, span);
+    let s = Math.round(idx - ratio * newSpan);
+    let en = s + newSpan;
+    if (s < 0) { en -= s; s = 0; }
+    if (en > xMaxAbs) { s -= (en - xMaxAbs); en = xMaxAbs; }
+    s = Math.max(0, s); en = Math.min(xMaxAbs, en);
+    if (s === 0 && en === xMaxAbs) setView(null);
+    else setView({ start: s, end: en });
+  };
 
-    // y grid + labels
-    ctx.font = `${10 * dpr}px "JetBrains Mono", monospace`;
-    ctx.textAlign = "right";
-    ctx.textBaseline = "middle";
-    yTicks.forEach((t) => {
-      const y = padT + (1 - t / yMax) * plotH;
-      ctx.strokeStyle = "rgba(255,255,255,0.06)";
-      ctx.beginPath();
-      ctx.moveTo(padL, y);
-      ctx.lineTo(W - padR, y);
-      ctx.stroke();
-      ctx.fillStyle = "rgba(203, 213, 225, 0.8)";
-      ctx.fillText(String(t), padL - 6 * dpr, y);
+  const zoomed = view !== null;
+  return (
+    <div
+      ref={wrapRef}
+      className="chart-wrap"
+      onMouseMove={onMouseMove}
+      onMouseLeave={onMouseLeave}
+      onMouseDown={onMouseDown}
+      onMouseUp={onMouseUp}
+      onDoubleClick={onDoubleClick}
+      onWheel={onWheel}
+    >
+      <canvas className="chart-canvas" ref={baseRef} />
+      <canvas className="chart-overlay" ref={overlayRef} />
+      {zoomed && (
+        <button className="chart-reset-btn" onClick={() => setView(null)} title="Reset zoom">
+          Reset zoom
+        </button>
+      )}
+      <div className="chart-hint">scroll to zoom • drag to pan • dbl-click to reset</div>
+    </div>
+  );
+}
+
+// ============================================================
+//  Shared uPlot React wrapper
+// ============================================================
+type UplotData = uPlot.AlignedData;
+function useUplot(
+  ref: React.RefObject<HTMLDivElement>,
+  buildOpts: (w: number, h: number) => uPlot.Options,
+  data: UplotData,
+  height: number,
+  deps: React.DependencyList,
+) {
+  const plotRef = React.useRef<uPlot | null>(null);
+
+  // (Re)create when deps change. Width is read from the ref on init + ResizeObserver.
+  React.useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const initW = Math.max(120, el.clientWidth || 600);
+    const opts = buildOpts(initW, height);
+    const u = new uPlot(opts, data, el);
+    plotRef.current = u;
+    const ro = new ResizeObserver(entries => {
+      for (const entry of entries) {
+        const w = Math.max(120, Math.floor(entry.contentRect.width));
+        u.setSize({ width: w, height });
+      }
     });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      u.destroy();
+      plotRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
 
-    // bars
-    const bw = plotW / data.counts.length;
-    data.counts.forEach((c, i) => {
-      const h = (c / yMax) * plotH;
-      const x = padL + i * bw;
-      const y = padT + plotH - h;
-      ctx.fillStyle = color;
-      ctx.fillRect(x + 1 * dpr, y, bw - 2 * dpr, h);
-    });
+  // Hot data updates without recreate.
+  React.useEffect(() => {
+    plotRef.current?.setData(data);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data]);
+}
 
-    // x ticks (use bin-start labels at intervals)
-    ctx.fillStyle = "rgba(203, 213, 225, 0.85)";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
-    const xLabelCount = Math.min(data.labels.length, Math.max(2, Math.floor(plotW / (60 * dpr))));
-    for (let k = 0; k < xLabelCount; k++) {
-      const i = Math.round((k * (data.labels.length - 1)) / Math.max(1, xLabelCount - 1));
-      const x = padL + i * bw + bw / 2;
-      ctx.fillText(formatSpin(data.labels[i]), x, padT + plotH + 6 * dpr);
-    }
+// ============================================================
+//  Survival curve — uPlot
+// ============================================================
+export function SurvivalChart({ spins, alive }: { spins: number[]; alive: number[] }) {
+  const ref = React.useRef<HTMLDivElement | null>(null);
+  const empty = !spins.length;
+  const data: UplotData = React.useMemo(() => {
+    if (empty) return [[0], [0]];
+    return [spins, alive.map(a => a * 100)];
+  }, [spins, alive, empty]);
 
-    // axis lines
-    ctx.strokeStyle = "rgba(255,255,255,0.18)";
-    ctx.lineWidth = 1.1 * dpr;
-    ctx.beginPath();
-    ctx.moveTo(padL, padT);
-    ctx.lineTo(padL, padT + plotH);
-    ctx.lineTo(padL + plotW, padT + plotH);
-    ctx.stroke();
+  const buildOpts = React.useCallback((w: number, h: number): uPlot.Options => ({
+    width: w,
+    height: h,
+    padding: [10, 12, 4, 4],
+    cursor: { drag: { x: true, y: false }, lock: false },
+    legend: { show: true, live: true },
+    scales: { x: { time: false }, y: { range: [0, 100] } },
+    axes: [
+      { stroke: "rgba(203,213,225,0.8)", grid: { stroke: "rgba(255,255,255,0.06)" }, ticks: { stroke: "rgba(255,255,255,0.18)" }, font: '11px "JetBrains Mono", monospace', size: 36, values: (_u, ts) => ts.map(t => formatSpin(t)) },
+      { stroke: "rgba(203,213,225,0.8)", grid: { stroke: "rgba(255,255,255,0.06)" }, ticks: { stroke: "rgba(255,255,255,0.18)" }, font: '11px "JetBrains Mono", monospace', size: 50, values: (_u, vs) => vs.map(v => `${v.toFixed(0)}%`) },
+    ],
+    series: [
+      { label: "Spin" },
+      {
+        label: "Solvent",
+        stroke: "#4ade80",
+        width: 2,
+        fill: "rgba(74,222,128,0.18)",
+        value: (_u, v) => v == null ? "—" : `${v.toFixed(1)}%`,
+      },
+    ],
+  }), []);
 
-    // axis titles
-    ctx.fillStyle = "rgba(244, 199, 98, 0.95)";
-    ctx.font = `700 ${10 * dpr}px Inter, sans-serif`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "alphabetic";
-    ctx.fillText(xLabel, padL + plotW / 2, H - 8 * dpr);
-    ctx.save();
-    ctx.translate(14 * dpr, padT + plotH / 2);
-    ctx.rotate(-Math.PI / 2);
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText(yLabel, 0, 0);
-    ctx.restore();
-  }, [data, color, xLabel, yLabel]);
+  useUplot(ref, buildOpts, data, 260, []);
+  return (
+    <div className="chart-uplot-wrap small">
+      <div ref={ref} className="chart-uplot" />
+      {empty && <div className="chart-empty">Run Monte Carlo to see survival curve</div>}
+    </div>
+  );
+}
 
-  return <canvas className="chart-canvas small" ref={ref} />;
+// ============================================================
+//  Fan chart — uPlot with bands between percentile pairs
+// ============================================================
+export function FanChart({
+  spins, p1, p10, p25, p50, p75, p90, p99, mean: _mean, startingBalance,
+}: {
+  spins: number[]; p1: number[]; p10: number[]; p25: number[]; p50: number[];
+  p75: number[]; p90: number[]; p99: number[]; mean: number[]; startingBalance: number;
+}) {
+  const ref = React.useRef<HTMLDivElement | null>(null);
+  const empty = !spins.length;
+
+  const data: UplotData = React.useMemo(() => {
+    if (empty) return [[0], [null], [null], [null], [null], [null], [null], [null]] as unknown as UplotData;
+    return [spins, p1, p99, p10, p90, p25, p75, p50] as UplotData;
+  }, [spins, p1, p99, p10, p90, p25, p75, p50, empty]);
+
+  const buildOpts = React.useCallback((w: number, h: number): uPlot.Options => ({
+    width: w,
+    height: h,
+    padding: [12, 16, 4, 4],
+    cursor: { drag: { x: true, y: false }, lock: false },
+    legend: { show: true, live: true },
+    scales: { x: { time: false }, y: {} },
+    axes: [
+      { stroke: "rgba(203,213,225,0.8)", grid: { stroke: "rgba(255,255,255,0.06)" }, ticks: { stroke: "rgba(255,255,255,0.18)" }, font: '11px "JetBrains Mono", monospace', size: 36, values: (_u, ts) => ts.map(t => formatSpin(t)) },
+      { stroke: "rgba(203,213,225,0.8)", grid: { stroke: "rgba(255,255,255,0.06)" }, ticks: { stroke: "rgba(255,255,255,0.18)" }, font: '11px "JetBrains Mono", monospace', size: 64, values: (_u, vs) => vs.map(v => formatTick(v, "money")) },
+    ],
+    series: [
+      { label: "Spin" },
+      { label: "p1",  stroke: "transparent", value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
+      { label: "p99", stroke: "transparent", value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
+      { label: "p10", stroke: "transparent", value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
+      { label: "p90", stroke: "transparent", value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
+      { label: "p25", stroke: "transparent", value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
+      { label: "p75", stroke: "transparent", value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
+      { label: "median", stroke: "#f4c762", width: 2.2, value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
+    ],
+    bands: [
+      { series: [2, 1], fill: "rgba(76, 201, 240, 0.10)" }, // p1..p99 outermost
+      { series: [4, 3], fill: "rgba(76, 201, 240, 0.18)" }, // p10..p90
+      { series: [6, 5], fill: "rgba(76, 201, 240, 0.30)" }, // p25..p75
+    ],
+    hooks: {
+      draw: [
+        (u) => {
+          // Dashed gold baseline at starting bankroll, only if it's in y-range.
+          const yScale = u.scales.y;
+          if (yScale.min == null || yScale.max == null) return;
+          if (startingBalance < yScale.min || startingBalance > yScale.max) return;
+          const ctx = u.ctx;
+          const y = u.valToPos(startingBalance, "y", true);
+          const left = u.bbox.left;
+          const right = u.bbox.left + u.bbox.width;
+          ctx.save();
+          ctx.strokeStyle = "rgba(244, 199, 98, 0.7)";
+          ctx.setLineDash([6, 6]);
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.moveTo(left, y);
+          ctx.lineTo(right, y);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          ctx.restore();
+        },
+      ],
+    },
+  }), [startingBalance]);
+
+  useUplot(ref, buildOpts, data, 320, [startingBalance]);
+  return (
+    <div className="chart-uplot-wrap small">
+      <div ref={ref} className="chart-uplot" />
+      {empty && <div className="chart-empty">Run Monte Carlo to see bankroll fan chart</div>}
+    </div>
+  );
+}
+
+// ============================================================
+//  Histogram — uPlot bars
+// ============================================================
+export function HistogramChart({
+  data: histData,
+  color = "#f4c762",
+  xLabel: _xLabel = "Spins until ruin",
+  yLabel: _yLabel = "# of trials",
+}: {
+  data: { labels: number[]; counts: number[] };
+  color?: string;
+  xLabel?: string;
+  yLabel?: string;
+}) {
+  const ref = React.useRef<HTMLDivElement | null>(null);
+  const empty = !histData.counts.length || histData.counts.every(c => c === 0);
+
+  const data: UplotData = React.useMemo(() => {
+    if (empty) return [[0], [0]];
+    return [histData.labels, histData.counts];
+  }, [histData, empty]);
+
+  const buildOpts = React.useCallback((w: number, h: number): uPlot.Options => {
+    const barW = histData.labels.length > 1 ? Math.max(0.4, 0.85 / 1) : 0.6;
+    return {
+      width: w,
+      height: h,
+      padding: [10, 12, 4, 4],
+      cursor: { drag: { x: true, y: false }, lock: false },
+      legend: { show: true, live: true },
+      scales: { x: { time: false }, y: {} },
+      axes: [
+        { stroke: "rgba(203,213,225,0.8)", grid: { stroke: "rgba(255,255,255,0.06)" }, ticks: { stroke: "rgba(255,255,255,0.18)" }, font: '11px "JetBrains Mono", monospace', size: 36, values: (_u, ts) => ts.map(t => formatSpin(t)) },
+        { stroke: "rgba(203,213,225,0.8)", grid: { stroke: "rgba(255,255,255,0.06)" }, ticks: { stroke: "rgba(255,255,255,0.18)" }, font: '11px "JetBrains Mono", monospace', size: 44 },
+      ],
+      series: [
+        { label: "Bin start" },
+        {
+          label: "Count",
+          stroke: color,
+          fill: color,
+          paths: uPlot.paths.bars!({ size: [barW, Infinity] }),
+          points: { show: false },
+          value: (_u, v) => v == null ? "—" : String(v),
+        },
+      ],
+    };
+  }, [color, histData.labels.length]);
+
+  useUplot(ref, buildOpts, data, 260, [color]);
+  return (
+    <div className="chart-uplot-wrap small">
+      <div ref={ref} className="chart-uplot" />
+      {empty && <div className="chart-empty">Run Monte Carlo to see distribution</div>}
+    </div>
+  );
 }
