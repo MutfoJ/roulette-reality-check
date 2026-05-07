@@ -257,10 +257,12 @@ export function BankrollChart({ history, results, mode, startingBalance }: Bankr
     layoutRef.current = { padL, padR, padT, padB, W, H, plotW, plotH, dpr, yMin, yMax, ySpan };
   }, [window, mode, startingBalance, start]);
 
-  // ----- Hover crosshair + tooltip on the overlay canvas -----
+  // ----- Hover crosshair + drag-to-zoom selection on the overlay canvas -----
   const [hover, setHover] = React.useState<{ x: number; y: number; idx: number } | null>(null);
+  // selection: client-space x range while the user is drag-selecting a zoom region.
+  const [selection, setSelection] = React.useState<{ startX: number; endX: number } | null>(null);
 
-  // Redraw overlay when hover changes.
+  // Redraw overlay when hover or selection changes.
   React.useEffect(() => {
     const canvas = overlayRef.current;
     if (!canvas) return;
@@ -270,7 +272,24 @@ export function BankrollChart({ history, results, mode, startingBalance }: Bankr
     canvas.width = W;
     canvas.height = H;
     ctx.clearRect(0, 0, W, H);
-    if (!hover || window.length < 2) return;
+
+    // Draw the drag-zoom selection rectangle, if any.
+    if (selection && wrapRef.current) {
+      const rect = wrapRef.current.getBoundingClientRect();
+      const x1Css = Math.max(padL / dpr, Math.min(rect.width - padR / dpr, selection.startX - rect.left));
+      const x2Css = Math.max(padL / dpr, Math.min(rect.width - padR / dpr, selection.endX - rect.left));
+      const xa = Math.min(x1Css, x2Css) * dpr;
+      const xb = Math.max(x1Css, x2Css) * dpr;
+      if (xb - xa > 1) {
+        ctx.fillStyle = "rgba(244, 199, 98, 0.12)";
+        ctx.strokeStyle = "rgba(244, 199, 98, 0.55)";
+        ctx.lineWidth = 1 * dpr;
+        ctx.fillRect(xa, padT, xb - xa, plotH);
+        ctx.strokeRect(xa, padT, xb - xa, plotH);
+      }
+    }
+
+    if (!hover || window.length < 2 || selection) return;
     const xMaxLocal = window.length - 1;
     const localIdx = hover.idx - start;
     if (localIdx < 0 || localIdx > xMaxLocal) return;
@@ -338,10 +357,12 @@ export function BankrollChart({ history, results, mode, startingBalance }: Bankr
       ctx.fillStyle = i === 0 ? "rgba(244,199,98,0.95)" : "#f1f5f9";
       ctx.fillText(l, tx + 8 * dpr, ty + 6 * dpr + i * 16 * dpr);
     });
-  }, [hover, window, mode, start]);
+  }, [hover, selection, window, mode, start]);
 
   // Mouse handlers — translate clientX to absolute spin index, manage view window.
-  const dragRef = React.useRef<{ originX: number; originStart: number; originEnd: number; moved: boolean } | null>(null);
+  // Drag-to-zoom: same UX as the uPlot Monte Carlo charts. Drag horizontally
+  // across a region; release to zoom that span. Double-click to reset.
+  const dragRef = React.useRef<{ startX: number; startIdx: number } | null>(null);
 
   const indexAtClientX = (clientX: number): number | null => {
     const wrap = wrapRef.current;
@@ -351,65 +372,53 @@ export function BankrollChart({ history, results, mode, startingBalance }: Bankr
     const cssPadL = padL / dpr;
     const cssPadR = padR / dpr;
     const plotW = rect.width - cssPadL - cssPadR;
-    const px = clientX - rect.left - cssPadL;
-    if (px < 0 || px > plotW) return null;
+    const px = Math.max(0, Math.min(plotW, clientX - rect.left - cssPadL));
     const xMaxLocal = window.length - 1;
     const local = Math.round((px / plotW) * xMaxLocal);
     return Math.max(0, Math.min(xMaxLocal, local)) + start;
   };
 
   const onMouseMove = (e: React.MouseEvent) => {
-    const drag = dragRef.current;
-    if (drag) {
-      const wrap = wrapRef.current!;
-      const rect = wrap.getBoundingClientRect();
-      const { padL, padR, dpr } = layoutRef.current;
-      const cssPadL = padL / dpr;
-      const cssPadR = padR / dpr;
-      const plotW = Math.max(1, rect.width - cssPadL - cssPadR);
-      const dxPx = e.clientX - drag.originX;
-      const span = drag.originEnd - drag.originStart;
-      const dxIdx = -Math.round((dxPx / plotW) * span);
-      let s = drag.originStart + dxIdx;
-      let en = drag.originEnd + dxIdx;
-      if (s < 0) { en -= s; s = 0; }
-      if (en > xMaxAbs) { s -= (en - xMaxAbs); en = xMaxAbs; }
-      s = Math.max(0, s); en = Math.min(xMaxAbs, en);
-      if (en - s < 2) return;
-      if (Math.abs(dxPx) > 3) drag.moved = true;
-      setView({ start: s, end: en });
+    if (dragRef.current) {
+      setSelection({ startX: dragRef.current.startX, endX: e.clientX });
+      setHover(null);
       return;
     }
     const idx = indexAtClientX(e.clientX);
     if (idx === null) { setHover(null); return; }
     setHover({ x: e.clientX, y: e.clientY, idx });
   };
-  const onMouseLeave = () => { setHover(null); dragRef.current = null; };
-  const onMouseDown = (e: React.MouseEvent) => {
-    if (e.button !== 0) return;
-    dragRef.current = { originX: e.clientX, originStart: start, originEnd: end, moved: false };
+  const onMouseLeave = () => {
+    setHover(null);
+    // Cancel an in-progress selection without zooming when the cursor exits.
+    dragRef.current = null;
+    setSelection(null);
   };
-  const onMouseUp = () => { dragRef.current = null; };
-  const onDoubleClick = () => setView(null);
-  const onWheel = (e: React.WheelEvent) => {
-    if (xMaxAbs < 2) return;
-    e.preventDefault();
+  const onMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0 || xMaxAbs < 2) return;
     const idx = indexAtClientX(e.clientX);
     if (idx === null) return;
-    const factor = e.deltaY > 0 ? 1.25 : 1 / 1.25;
-    const span = end - start;
-    const newSpan = Math.max(2, Math.min(xMaxAbs, Math.round(span * factor)));
-    if (newSpan === span) return;
-    // Keep `idx` at the same screen ratio.
-    const ratio = (idx - start) / Math.max(1, span);
-    let s = Math.round(idx - ratio * newSpan);
-    let en = s + newSpan;
-    if (s < 0) { en -= s; s = 0; }
-    if (en > xMaxAbs) { s -= (en - xMaxAbs); en = xMaxAbs; }
-    s = Math.max(0, s); en = Math.min(xMaxAbs, en);
-    if (s === 0 && en === xMaxAbs) setView(null);
+    dragRef.current = { startX: e.clientX, startIdx: idx };
+    setSelection({ startX: e.clientX, endX: e.clientX });
+    setHover(null);
+  };
+  const onMouseUp = (e: React.MouseEvent) => {
+    const drag = dragRef.current;
+    dragRef.current = null;
+    if (!drag) return;
+    const dx = Math.abs(e.clientX - drag.startX);
+    setSelection(null);
+    // < 5px counts as a click, not a drag — preserve hover behaviour.
+    if (dx < 5) return;
+    const endIdx = indexAtClientX(e.clientX);
+    if (endIdx === null) return;
+    const s = Math.min(drag.startIdx, endIdx);
+    const en = Math.max(drag.startIdx, endIdx);
+    if (en - s < 2) return;
+    if (s <= 0 && en >= xMaxAbs) setView(null);
     else setView({ start: s, end: en });
   };
+  const onDoubleClick = () => setView(null);
 
   const zoomed = view !== null;
   return (
@@ -421,7 +430,6 @@ export function BankrollChart({ history, results, mode, startingBalance }: Bankr
       onMouseDown={onMouseDown}
       onMouseUp={onMouseUp}
       onDoubleClick={onDoubleClick}
-      onWheel={onWheel}
     >
       <canvas className="chart-canvas" ref={baseRef} />
       <canvas className="chart-overlay" ref={overlayRef} />
@@ -430,7 +438,7 @@ export function BankrollChart({ history, results, mode, startingBalance }: Bankr
           Reset zoom
         </button>
       )}
-      <div className="chart-hint">scroll to zoom • drag to pan • dbl-click to reset</div>
+      <div className="chart-hint">drag to select a range to zoom • dbl-click to reset</div>
     </div>
   );
 }

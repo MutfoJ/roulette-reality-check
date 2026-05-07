@@ -789,7 +789,11 @@ input:focus, select:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgb
   color: var(--text);
 }
 .u-cursor-x, .u-cursor-y { background: rgba(244, 199, 98, 0.45) !important; }
-.u-cursor-pt { box-shadow: 0 0 0 2px rgba(0,0,0,0.5); }
+/* uPlot creates one .u-cursor-pt per series and parks them at (0,0) before
+   any hover. Even with cursor.points.show=false in opts, in some uPlot
+   versions the elements still render until the cursor enters the chart —
+   showing as a yellow speck at the top-left. Hide them outright. */
+.u-cursor-pt { display: none !important; }
 .u-select { background: rgba(244, 199, 98, 0.12); border: 1px solid rgba(244, 199, 98, 0.5); }
 
 .summary-grid {
