@@ -283,6 +283,13 @@ export default function App() {
   const balanceTone = balance >= startingBalance ? "positive" : "negative";
   const lastNumbers = results.slice(-18).reverse();
 
+  // Bankroll chart redraws on every history change. During a fast simulation
+  // (1000+ spins/frame) that's a 10k-point canvas redraw per frame — heavy
+  // enough to drop scroll frames on phones. Deferring lets React 18 schedule
+  // the chart re-render at lower priority than touch / scroll events.
+  const deferredHistory = React.useDeferredValue(history);
+  const deferredResults = React.useDeferredValue(results);
+
   return (
     <main>
       <section className="hero">
@@ -482,7 +489,7 @@ export default function App() {
                 ))}
               </div>
             </div>
-            <BankrollChart history={history} results={results} mode={chartMode} startingBalance={startingBalance} />
+            <BankrollChart history={deferredHistory} results={deferredResults} mode={chartMode} startingBalance={startingBalance} />
 
             <div className="summary-grid">
               <Metric label="Ending bankroll" value={fmtMoney(summary.endingBalance)} tone={summary.profit >= 0 ? "good" : "bad"} />

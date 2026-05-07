@@ -368,38 +368,6 @@ export function calculateSummary(history: number[], results: SpinResult[], start
 
 // ---------- monte carlo ----------
 
-// In-place quickselect on a Float32Array. Used to compute fan-chart
-// percentile bands without paying for a full sort per checkpoint column.
-// Average O(n), worst O(n^2) — but median-of-three pivot makes worst-case
-// vanishingly rare on the bankroll distributions we feed it.
-function partition(arr: Float32Array, lo: number, hi: number, pivotIdx: number): number {
-  const pivot = arr[pivotIdx];
-  arr[pivotIdx] = arr[hi]; arr[hi] = pivot;
-  let store = lo;
-  for (let i = lo; i < hi; i++) {
-    if (arr[i] < pivot) {
-      const t = arr[store]; arr[store] = arr[i]; arr[i] = t;
-      store++;
-    }
-  }
-  const t = arr[store]; arr[store] = arr[hi]; arr[hi] = t;
-  return store;
-}
-function quickselect(arr: Float32Array, k: number, lo = 0, hi = arr.length - 1): number {
-  while (lo < hi) {
-    const mid = (lo + hi) >> 1;
-    const a = arr[lo], b = arr[mid], c = arr[hi];
-    let pIdx: number;
-    if ((a - b) * (c - a) >= 0) pIdx = lo;
-    else if ((b - a) * (c - b) >= 0) pIdx = mid;
-    else pIdx = hi;
-    pIdx = partition(arr, lo, hi, pIdx);
-    if (pIdx === k) return arr[k];
-    if (k < pIdx) hi = pIdx - 1; else lo = pIdx + 1;
-  }
-  return arr[k];
-}
-
 export interface MonteCarloProgress { done: number; total: number; }
 
 /**
@@ -477,24 +445,25 @@ export function runMonteCarloSync(
   const avgChangePerSpin = totalSpinsPlayed > 0 ? totalProfitAll / totalSpinsPlayed : 0;
   const realizedEdge = totalStakedAll > 0 ? totalProfitAll / totalStakedAll : 0;
 
-  // Fan-chart percentiles: quickselect each pick — O(n) avg vs O(n log n)
-  // of the previous full sort. Picks go low → high so each later select can
-  // start from the previous index, exploiting prior partial ordering.
+  // Fan-chart percentiles: full sort per checkpoint. Native Float32Array.sort
+  // is highly optimized in V8 and benchmarks faster than a JS quickselect for
+  // the run sizes we deal with — and gives identical results regardless of
+  // pivot choice, which keeps the band shapes stable across runs.
   const fanSpins: number[] = Array.from(checkpoints);
   const p1: number[] = [], p10: number[] = [], p25: number[] = [], p50: number[] = [], p75: number[] = [], p90: number[] = [], p99: number[] = [], mean: number[] = [];
   const col = new Float32Array(runs);
   const pickIdx = (q: number) => Math.min(runs - 1, Math.max(0, Math.floor(runs * q)));
-  const idxs = [pickIdx(0.01), pickIdx(0.10), pickIdx(0.25), pickIdx(0.50), pickIdx(0.75), pickIdx(0.90), pickIdx(0.99)];
   for (let k = 0; k < K; k++) {
     let s = 0;
     for (let r = 0; r < runs; r++) { const v = samples[k * runs + r]; col[r] = v; s += v; }
-    p1.push(quickselect(col, idxs[0]));
-    p10.push(quickselect(col, idxs[1], idxs[0]));
-    p25.push(quickselect(col, idxs[2], idxs[1]));
-    p50.push(quickselect(col, idxs[3], idxs[2]));
-    p75.push(quickselect(col, idxs[4], idxs[3]));
-    p90.push(quickselect(col, idxs[5], idxs[4]));
-    p99.push(quickselect(col, idxs[6], idxs[5]));
+    col.sort();
+    p1.push(col[pickIdx(0.01)]);
+    p10.push(col[pickIdx(0.10)]);
+    p25.push(col[pickIdx(0.25)]);
+    p50.push(col[pickIdx(0.50)]);
+    p75.push(col[pickIdx(0.75)]);
+    p90.push(col[pickIdx(0.90)]);
+    p99.push(col[pickIdx(0.99)]);
     mean.push(s / runs);
   }
   const survivalAlive = Array.from(aliveAt, c => c / runs);

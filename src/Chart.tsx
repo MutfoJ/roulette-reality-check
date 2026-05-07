@@ -439,18 +439,22 @@ export function BankrollChart({ history, results, mode, startingBalance }: Bankr
 //  Shared uPlot React wrapper
 // ============================================================
 type UplotData = uPlot.AlignedData;
-function useUplot(
-  ref: React.RefObject<HTMLDivElement>,
-  buildOpts: (w: number, h: number) => uPlot.Options,
-  data: UplotData,
-  height: number,
-  deps: React.DependencyList,
-) {
+
+interface UplotMounterProps {
+  innerRef: React.RefObject<HTMLDivElement>;
+  buildOpts: (w: number, h: number) => uPlot.Options;
+  data: UplotData;
+  height: number;
+  deps: React.DependencyList;
+}
+// A small wrapper component that owns the uPlot instance lifecycle.
+// Mounts only when the parent decides it should — i.e. never in the
+// empty state, so we don't get stray axes / 0-baseline marks.
+function UplotMounter({ innerRef, buildOpts, data, height, deps }: UplotMounterProps) {
   const plotRef = React.useRef<uPlot | null>(null);
 
-  // (Re)create when deps change. Width is read from the ref on init + ResizeObserver.
   React.useEffect(() => {
-    const el = ref.current;
+    const el = innerRef.current;
     if (!el) return;
     const initW = Math.max(120, el.clientWidth || 600);
     const opts = buildOpts(initW, height);
@@ -471,11 +475,20 @@ function useUplot(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 
-  // Hot data updates without recreate.
   React.useEffect(() => {
     plotRef.current?.setData(data);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
+
+  return <div ref={innerRef} className="chart-uplot" />;
+}
+
+// Centered empty-state for the MC charts. Matches the BankrollChart's
+// "No spins yet — press Run to start" look. Prefer rendering this alone
+// (no uPlot, no axes, no stub series) so we never see a stray baseline,
+// dot, or bar at y=0 in the empty state.
+function EmptyChart({ message }: { message: string }) {
+  return <div className="chart-empty-block">{message}</div>;
 }
 
 // ============================================================
@@ -484,16 +497,16 @@ function useUplot(
 export function SurvivalChart({ spins, alive }: { spins: number[]; alive: number[] }) {
   const ref = React.useRef<HTMLDivElement | null>(null);
   const empty = !spins.length;
-  const data: UplotData = React.useMemo(() => {
-    if (empty) return [[0], [0]];
-    return [spins, alive.map(a => a * 100)];
-  }, [spins, alive, empty]);
+  const data: UplotData = React.useMemo(
+    () => (empty ? [[0], [0]] : [spins, alive.map(a => a * 100)]),
+    [spins, alive, empty],
+  );
 
   const buildOpts = React.useCallback((w: number, h: number): uPlot.Options => ({
     width: w,
     height: h,
     padding: [10, 12, 4, 4],
-    cursor: { drag: { x: true, y: false }, lock: false },
+    cursor: { drag: { x: true, y: false }, lock: false, points: { size: 6 } },
     legend: { show: true, live: true },
     scales: { x: { time: false }, y: { range: [0, 100] } },
     axes: [
@@ -507,16 +520,24 @@ export function SurvivalChart({ spins, alive }: { spins: number[]; alive: number
         stroke: "#4ade80",
         width: 2,
         fill: "rgba(74,222,128,0.18)",
-        value: (_u, v) => v == null ? "—" : `${v.toFixed(1)}%`,
+        points: { show: false },
+        value: (_u, v) => (v == null ? "—" : `${v.toFixed(1)}%`),
       },
     ],
   }), []);
 
-  useUplot(ref, buildOpts, data, 260, []);
+  // Don't mount uPlot at all when empty — avoids the stray "0% at spin 0"
+  // green dot the user pointed out.
+  if (empty) {
+    return (
+      <div className="chart-uplot-wrap small">
+        <EmptyChart message="Run Monte Carlo to see survival curve" />
+      </div>
+    );
+  }
   return (
     <div className="chart-uplot-wrap small">
-      <div ref={ref} className="chart-uplot" />
-      {empty && <div className="chart-empty">Run Monte Carlo to see survival curve</div>}
+      <UplotMounter innerRef={ref} buildOpts={buildOpts} data={data} height={260} deps={[]} />
     </div>
   );
 }
@@ -533,31 +554,35 @@ export function FanChart({
   const ref = React.useRef<HTMLDivElement | null>(null);
   const empty = !spins.length;
 
-  const data: UplotData = React.useMemo(() => {
-    if (empty) return [[0], [null], [null], [null], [null], [null], [null], [null]] as unknown as UplotData;
-    return [spins, p1, p99, p10, p90, p25, p75, p50] as UplotData;
-  }, [spins, p1, p99, p10, p90, p25, p75, p50, empty]);
+  const data: UplotData = React.useMemo(
+    () => (empty ? [[0]] as UplotData : [spins, p1, p99, p10, p90, p25, p75, p50] as UplotData),
+    [spins, p1, p99, p10, p90, p25, p75, p50, empty],
+  );
 
   const buildOpts = React.useCallback((w: number, h: number): uPlot.Options => ({
     width: w,
     height: h,
     padding: [12, 16, 4, 4],
-    cursor: { drag: { x: true, y: false }, lock: false },
+    // Custom cursor: hide hover-point markers entirely. Those were the
+    // chunky white "bubble" dots visible when zoomed in to a few spins.
+    cursor: { drag: { x: true, y: false }, lock: false, points: { show: false } },
     legend: { show: true, live: true },
     scales: { x: { time: false }, y: {} },
     axes: [
       { stroke: "rgba(203,213,225,0.8)", grid: { stroke: "rgba(255,255,255,0.06)" }, ticks: { stroke: "rgba(255,255,255,0.18)" }, font: '11px "JetBrains Mono", monospace', size: 36, values: (_u, ts) => ts.map(t => formatSpin(t)) },
       { stroke: "rgba(203,213,225,0.8)", grid: { stroke: "rgba(255,255,255,0.06)" }, ticks: { stroke: "rgba(255,255,255,0.18)" }, font: '11px "JetBrains Mono", monospace', size: 64, values: (_u, vs) => vs.map(v => formatTick(v, "money")) },
     ],
+    // points: { show: false } on every series suppresses the per-data
+    // marker dots that uPlot draws when the X spacing is wide enough.
     series: [
       { label: "Spin" },
-      { label: "p1",  stroke: "transparent", value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
-      { label: "p99", stroke: "transparent", value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
-      { label: "p10", stroke: "transparent", value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
-      { label: "p90", stroke: "transparent", value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
-      { label: "p25", stroke: "transparent", value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
-      { label: "p75", stroke: "transparent", value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
-      { label: "median", stroke: "#f4c762", width: 2.2, value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
+      { label: "p1",  stroke: "transparent", points: { show: false }, value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
+      { label: "p99", stroke: "transparent", points: { show: false }, value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
+      { label: "p10", stroke: "transparent", points: { show: false }, value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
+      { label: "p90", stroke: "transparent", points: { show: false }, value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
+      { label: "p25", stroke: "transparent", points: { show: false }, value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
+      { label: "p75", stroke: "transparent", points: { show: false }, value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
+      { label: "median", stroke: "#f4c762", width: 2.2, points: { show: false }, value: (_u, v) => v == null ? "—" : formatTick(v, "money") },
     ],
     bands: [
       { series: [2, 1], fill: "rgba(76, 201, 240, 0.10)" }, // p1..p99 outermost
@@ -590,11 +615,16 @@ export function FanChart({
     },
   }), [startingBalance]);
 
-  useUplot(ref, buildOpts, data, 320, [startingBalance]);
+  if (empty) {
+    return (
+      <div className="chart-uplot-wrap small">
+        <EmptyChart message="Run Monte Carlo to see bankroll fan chart" />
+      </div>
+    );
+  }
   return (
     <div className="chart-uplot-wrap small">
-      <div ref={ref} className="chart-uplot" />
-      {empty && <div className="chart-empty">Run Monte Carlo to see bankroll fan chart</div>}
+      <UplotMounter innerRef={ref} buildOpts={buildOpts} data={data} height={320} deps={[startingBalance]} />
     </div>
   );
 }
@@ -616,18 +646,18 @@ export function HistogramChart({
   const ref = React.useRef<HTMLDivElement | null>(null);
   const empty = !histData.counts.length || histData.counts.every(c => c === 0);
 
-  const data: UplotData = React.useMemo(() => {
-    if (empty) return [[0], [0]];
-    return [histData.labels, histData.counts];
-  }, [histData, empty]);
+  const data: UplotData = React.useMemo(
+    () => (empty ? [[0]] as UplotData : [histData.labels, histData.counts] as UplotData),
+    [histData, empty],
+  );
 
   const buildOpts = React.useCallback((w: number, h: number): uPlot.Options => {
-    const barW = histData.labels.length > 1 ? Math.max(0.4, 0.85 / 1) : 0.6;
+    const barW = histData.labels.length > 1 ? 0.85 : 0.6;
     return {
       width: w,
       height: h,
       padding: [10, 12, 4, 4],
-      cursor: { drag: { x: true, y: false }, lock: false },
+      cursor: { drag: { x: true, y: false }, lock: false, points: { show: false } },
       legend: { show: true, live: true },
       scales: { x: { time: false }, y: {} },
       axes: [
@@ -648,11 +678,16 @@ export function HistogramChart({
     };
   }, [color, histData.labels.length]);
 
-  useUplot(ref, buildOpts, data, 260, [color]);
+  if (empty) {
+    return (
+      <div className="chart-uplot-wrap small">
+        <EmptyChart message="Run Monte Carlo to see distribution" />
+      </div>
+    );
+  }
   return (
     <div className="chart-uplot-wrap small">
-      <div ref={ref} className="chart-uplot" />
-      {empty && <div className="chart-empty">Run Monte Carlo to see distribution</div>}
+      <UplotMounter innerRef={ref} buildOpts={buildOpts} data={data} height={260} deps={[color]} />
     </div>
   );
 }

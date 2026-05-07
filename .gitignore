@@ -9,3 +9,5 @@ dist
 .playwright-cli
 *.tsbuildinfo
 dev-dist
+
+.vercel

@@ -34,6 +34,8 @@ html, body {
   /* No overflow lock here — let mobile browsers scroll naturally
      when the layout collapses to single column. The split-pane
      overflow is enforced by .workspace at >=1100px only. */
+  /* Stop the body scroll from chaining into the simulation panels. */
+  overscroll-behavior-y: contain;
 }
 body {
   margin: 0;
@@ -187,6 +189,10 @@ main {
   background: linear-gradient(180deg, var(--bg-2), var(--bg-1));
   box-shadow: var(--shadow);
   padding: 20px;
+  /* Isolate each panel's paint + layout from the document. Prevents the
+     wheel rotation and chart canvas redraws from forcing the browser to
+     repaint the rest of the page during scroll on mobile. */
+  contain: layout paint;
 }
 .panel + .panel { margin-top: 20px; }
 
@@ -384,6 +390,9 @@ input:focus, select:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgb
   margin: 0 auto;
   display: grid;
   place-items: center;
+  /* Wheel rotation should never invalidate document layout/scroll. */
+  contain: layout paint;
+  transform: translateZ(0); /* dedicated GPU layer */
 }
 .wheel-svg-wrap {
   position: absolute;
@@ -683,6 +692,8 @@ input:focus, select:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgb
   cursor: crosshair;
   user-select: none;
   touch-action: pan-y; /* allow native vertical scroll on phones */
+  /* Heavy canvas redraws shouldn't bubble paint to the rest of the page. */
+  contain: layout paint;
 }
 .chart-wrap .chart-canvas { border-radius: 10px; }
 .chart-wrap .chart-overlay {
@@ -736,6 +747,8 @@ input:focus, select:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgb
   border: 1px solid var(--border);
   padding: 6px 8px;
   overflow: hidden;
+  contain: layout paint;
+  touch-action: pan-y;
 }
 .chart-uplot-wrap.small { height: 320px; }
 .chart-uplot { width: 100%; height: 100%; }
@@ -747,6 +760,18 @@ input:focus, select:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgb
   color: rgba(139, 149, 173, 0.65);
   font-size: 13px;
   pointer-events: none;
+}
+/* Standalone empty-state block (no underlying uPlot) — matches the bare
+   "press Run to start" message shown by the bankroll canvas chart. */
+.chart-empty-block {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: rgba(139, 149, 173, 0.6);
+  font-size: 14px;
+  text-align: center;
+  padding: 0 16px;
 }
 /* uPlot dark-theme overrides — match panel palette. */
 .uplot, .u-wrap { font-family: Inter, sans-serif; color: var(--text); }
