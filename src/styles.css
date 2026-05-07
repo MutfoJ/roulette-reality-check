@@ -405,11 +405,14 @@ input:focus, select:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgb
   height: 100%;
   border-radius: 50%;
   filter: drop-shadow(0 30px 60px rgba(0, 0, 0, 0.55)) drop-shadow(0 0 30px rgba(244, 199, 98, 0.1));
-  /* easeOutQuint curve — slow settle into the pocket. will-change keeps the
-     transform on the GPU so the rotation doesn't trigger layout/paint. */
+  /* easeOutQuint curve — slow settle into the pocket.
+     Note: deliberately no will-change / backface-visibility here. Promoting
+     the SVG to its own GPU layer makes the browser rasterize it to a bitmap
+     before rotating, which makes the 0.8px gold pocket strokes interpolate
+     at lower quality during the spin and re-rasterize sharp at the end —
+     the brief "distort then correct" effect. CSS transitions on `transform`
+     are still GPU-accelerated without the hint. */
   transition: transform 1100ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform;
-  backface-visibility: hidden;
 }
 .wheel-rim {
   position: absolute;
@@ -425,8 +428,6 @@ input:focus, select:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgb
   border-radius: 50%;
   pointer-events: none;
   transition: transform 1100ms cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: transform;
-  backface-visibility: hidden;
 }
 .ball-orbit.idle { animation: ball-spin 6s linear infinite; }
 @keyframes ball-spin { to { transform: rotate(-360deg); } }
