@@ -377,22 +377,22 @@ input:focus, select:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgb
 /* ---------- WHEEL ---------- */
 .wheel-shell {
   display: grid;
-  grid-template-columns: minmax(280px, 460px) minmax(0, 1fr);
-  gap: 28px;
+  grid-template-columns: minmax(220px, 360px) minmax(0, 1fr);
+  gap: 24px;
   align-items: center;
   padding: 12px 0;
 }
 .wheel-stage {
   position: relative;
   width: 100%;
-  max-width: 460px;
+  max-width: 360px;
   aspect-ratio: 1;
   margin: 0 auto;
   display: grid;
   place-items: center;
-  /* Wheel rotation should never invalidate document layout/scroll. */
-  contain: layout paint;
-  transform: translateZ(0); /* dedicated GPU layer */
+  /* Note: deliberately no `contain: paint` here — the .wheel-rim extends 10px
+     outside the stage box and would get clipped. The parent .panel already
+     has containment, which is what isolates scroll cost. */
 }
 .wheel-svg-wrap {
   position: absolute;
@@ -893,7 +893,7 @@ input:focus, select:focus { border-color: var(--gold); box-shadow: 0 0 0 3px rgb
   .dozen-row, .outside-row { padding-left: 42px; }
   .speed-grid button { min-width: 36px; min-height: 32px; padding: 0 6px; font-size: 11px; }
   .btn { min-height: 40px; padding: 0 12px; }
-  .wheel-stage { max-width: min(360px, 90vw); }
+  .wheel-stage { max-width: min(280px, 80vw); }
 }
 @media (max-width: 480px) {
   .chip-row button { font-size: 10px; padding: 5px 6px; }
