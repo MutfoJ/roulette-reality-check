@@ -475,22 +475,20 @@ function UplotMounter({ innerRef, buildOpts, data, height, deps, xRange }: Uplot
     if (!el) return;
     const initW = Math.max(120, el.clientWidth || 600);
     const opts = buildOpts(initW, height);
-    // Belt-and-braces: even with cursor.points.show=false in opts and
-    // CSS display:none on .u-cursor-pt, certain uPlot setups still leave
-    // a 1-pixel-tall element at (0,0) that renders as a faint speck.
-    // Hard-hide them at instance creation.
+    // uPlot creates one .u-cursor-pt per series; even with
+    // cursor.points.show=false they linger in the DOM at translate(0,0),
+    // which is the plot-area origin = the speck the user kept seeing
+    // top-left of the fan chart. Remove the nodes outright, and re-run
+    // the sweep on every redraw in case uPlot re-creates them.
+    const stripPts = (u: uPlot) => {
+      u.root.querySelectorAll<HTMLElement>(".u-cursor-pt").forEach(el => el.remove());
+    };
     const prevReady = opts.hooks?.ready ?? [];
+    const prevDraw = opts.hooks?.draw ?? [];
     opts.hooks = {
       ...opts.hooks,
-      ready: [
-        ...(Array.isArray(prevReady) ? prevReady : [prevReady]),
-        (u: uPlot) => {
-          u.root.querySelectorAll<HTMLElement>(".u-cursor-pt").forEach(el => {
-            el.style.display = "none";
-            el.style.visibility = "hidden";
-          });
-        },
-      ],
+      ready: [...(Array.isArray(prevReady) ? prevReady : [prevReady]), stripPts],
+      draw: [...(Array.isArray(prevDraw) ? prevDraw : [prevDraw]), stripPts],
     };
     const u = new uPlot(opts, data, el);
     plotRef.current = u;
